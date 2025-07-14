@@ -1,0 +1,110 @@
+# Some of these tables may be unused at the time of creation and may remain that way for some time
+
+[aliases.NG]
+market = 'NG_F'
+COT = 'NATURAL_GAS'
+
+[aliases.PET]
+distillate = "HO_F"
+gasoline = "RB_F"
+crude = "CL_F"
+
+[NG.storage]
+total_lower_48 = "NG.NW2_EPG0_SWO_R48_BCF.W"
+total_underground = "NG.N5010US2.M"
+east_region = "NG.NW2_EPG0_SWO_R31_BCF.W"
+midwest_region = "NG.NW2_EPG0_SWO_R32_BCF.W"
+south_central_region = "NG.NW2_EPG0_SWO_R33_BCF.W"
+pacific_region = "NG.NW2_EPG0_SWO_R35_BCF.W"
+mountain_region = "NG.NW2_EPG0_SWO_R34_BCF.W"
+
+[NG.production]
+dry_production_monthly = "NG.N9050US2.M"
+
+[NG.consumption]
+total = "NG.N9140US2.M"
+electric_power = "NG.N3045US2.M"
+industrial = "NG.N3025US2.M"
+residential = "NG.N3010US2.M"
+commercial = "NG.N3020US2.M"
+gross_withdrawals = "NG.N9010US2.M"
+net_withdrawals = "NG.N9220US1.M"
+
+
+[NG.exports]
+total = "NG.N9130US2.M"
+pipeline_mexico = "NG.N9132MX2.M"
+lng = "NG.N9133US2.M"
+
+[NG.imports]
+Canada = "NG.N9102CN2.M"
+Mexico = "NG.N9102MX2.M"
+pipeline = "NG.N9102US2.M"
+lng = "NG.9103982.M"
+#net = "NG.9180US1.M"
+
+[NG.capacity]
+#working_gas = "NG.NGTWORKCAP.M"
+#base_gas = "NG.NGTBASECAP.M"
+
+[NG.prices]
+henry_hub_daily = "NG.RNGWHHD.D"
+citygate_monthly = "NG.N3050US3.M"
+residential_monthly = "NG.N3010US3.M"
+#import = "NG.9100US3.M"
+canada_import = "NG.N9102CN3.M"
+mexico_import = "NG.N9102MX3.M"
+#NGlng_import = "NG.9103983.M"
+NG_1 = 'NG.RNGC1.D'
+NG_2 = 'NG.RNGC2.D'
+NG_3 = 'NG.RNGC3.D'
+NG_4 = 'NG.RNGC4.D'
+
+
+[PET.crude]
+#inventories_cushing = "PET.WCESTC01.W"
+#production_us = "PET.WCRPROUS2.W"
+stocks_ex_spr = "PET.WCESTUS1.W"
+stocks_total = "PET.WCRSTUS1.W"
+imports_total = "PET.WCEIMUS2.W"
+exports_total = "PET.WCREXUS2.W"
+refinery_input = "PET.WCRRIUS2.W"
+spot_price_wti = "PET.RWTC.D"
+spot_price_brent = "PET.RBRTE.D"
+
+
+[PET.gasoline]
+inventories_total = "PET.WGFSTUS1.W"
+inventories_finished = "PET.WGFSTUS1.W"
+production = "PET.WGFRPUS2.W"
+imports = "PET.WGTIMUS2.W"
+product_supplied = "PET.WGFUPUS2.W"
+#retail_price_regular = "PET.EMM_EPMR_PTE_NUS_DPG.D"
+
+[PET.distillates]
+inventories_total = "PET.WDISTUS1.W"
+#production = "PET.WDNPUPUS2.W"
+#imports = "PET.WDISTIMUS2.W"
+#implied_demand = "PET.WDISUPUS2.W"
+#spot_price_heating_oil = "PET.RWHEOP.D"
+
+[PET.refineries]
+utilization_rate = "PET.WPULEUS3.W"
+crude_input_total = "PET.WCRRIUS2.W"
+#operable_capacity = "PET.WOPRCUS2.W"
+#crude_stocks =  "PET.MCRRSUS1.W"
+
+[routes]
+futs = 'pri/fut/'
+
+
+
+[futs.aliases.PET]
+crude_oil = 'RCLC'
+gasoline = 'EER_EPMRR_PE3_Y35NY_DPG'
+heating_oil = 'EER_EPD2F_PE3_Y35NY_DPG'
+
+
+
+
+

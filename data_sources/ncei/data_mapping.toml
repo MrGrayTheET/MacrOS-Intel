@@ -1,0 +1,6 @@
+[datasets]
+climate_grid = 'nClimGrid-daily'
+
+[temperature]
+max = "TMAX"
+min = "TMIN"
