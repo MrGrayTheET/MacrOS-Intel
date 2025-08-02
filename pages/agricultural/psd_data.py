@@ -1,12 +1,10 @@
 from dotenv import load_dotenv
 load_dotenv('.env'); from sources.data_tables import FASTable
-from assets.frames import FundamentalFrame as FFrame, MarketFrame as MFrame
+from components.frames import FundamentalFrame as FFrame
 from assets.app_container import DARK_THEME_CSS
-from dash import dcc, html, dash_table, callback, Input, Output, State
+from dash import html
 import dash
 import dash_bootstrap_components as dbc
-from pathlib import Path
-
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
 fas_cli = FASTable('cattle')
