@@ -1,13 +1,5 @@
 # Some of these tables may be unused at the time of creation and may remain that way for some time
 
-[aliases.NG]
-market = 'NG_F'
-COT = 'NATURAL_GAS'
-
-[aliases.PET]
-distillate = "HO_F"
-gasoline = "RB_F"
-crude = "CL_F"
 
 [NG.storage]
 total_lower_48 = "NG.NW2_EPG0_SWO_R48_BCF.W"

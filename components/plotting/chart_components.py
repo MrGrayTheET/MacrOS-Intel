@@ -1,164 +1,268 @@
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
+
+from sources.data_tables import MarketTable
 from dash import dcc, html
-from datetime import datetime, timedelta
-import numpy as np
+from datetime import  datetime
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import pandas as pd
+import numpy as np
+
+from utils import key_to_name
 class MarketChart:
-    """
-    A reusable market chart component that can display line charts or candlestick charts.
-    
-    Parameters:
-    - chart_id: Unique identifier for the chart
-    - title: Chart title
-    - market_data: DataFrame with columns ['Date', 'Open', 'High', 'Low', 'Close', 'Volume'] or ['Date', 'Price']
-    - chart_type: 'line' or 'candlestick'
-    - width: Width as percentage string (e.g., '49%') or pixels (e.g., '400px')
-    - height: Height in pixels (default: 300)
-    - float_position: 'left', 'right', or None for CSS float positioning
-    - margin: Margin string (e.g., '5px 1%')
-    """
-    
-    def __init__(self, chart_id, title="Market Chart", market_data=None, chart_type='line', 
-                 width='49%', height=300, float_position='left', margin='5px 1%'):
+    """Enhanced chart component with timeframe resampling and indicator support."""
+
+    def __init__(self, chart_id='market-chart', title="Market Chart", chart_type='line', height=300,
+                 line_color='#1f77b4', resample_freq=None, start_date=None, end_date=None, config=None):
+        if not config:
+            config = {}
+
         self.chart_id = chart_id
-        self.title = title
-        self.market_data = market_data
-        self.chart_type = chart_type
-        self.width = width
-        self.height = height
-        self.float_position = float_position
-        self.margin = margin
-        
-    def _create_line_chart(self):
-        """Create a line chart from market data"""
-        fig = go.Figure()
-        
-        if self.market_data is not None and not self.market_data.empty:
-            # Check if we have OHLC data or just price data
-            if 'Close' in self.market_data.columns:
-                fig.add_trace(go.Scatter(
-                    x=self.market_data['Date'],
-                    y=self.market_data['Close'],
-                    mode='lines',
-                    name='Price',
-                    line=dict(color='#1f77b4', width=2)
-                ))
-            elif 'Price' in self.market_data.columns:
-                fig.add_trace(go.Scatter(
-                    x=self.market_data['Date'],
-                    y=self.market_data['Price'],
-                    mode='lines',
-                    name='Price',
-                    line=dict(color='#1f77b4', width=2)
-                ))
+        self.title = config.get('title', title)
+        self.chart_type = config.get('chart_type', 'line')
+        self.height = config.get('height', height)
+        self.line_color = config.get('line_color', line_color)
+        self.indicators = []
+        self.market_table = MarketTable()
+        self.ticker = config.get('ticker', None)
+        self.interval = config.get('freq', resample_freq)
+        self.resample = True if self.interval else False
+        self.start_date = config.get('start_date', start_date)
+        self.end_date = config.get('end_date', end_date)
+        self.ohlc_agg = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+        self.original_data = None
+        self.market_data = None
+
+    def _apply_date_filter(self, data):
+        """Apply date range filtering."""
+        if data is None or data.empty or (not self.start_date and not self.end_date):
+            return data
+
+        filtered_data = data.copy()
+
+        if isinstance(filtered_data.index, pd.DatetimeIndex):
+            if self.start_date:
+                filtered_data = filtered_data[filtered_data.index >= pd.to_datetime(self.start_date)]
+            if self.end_date:
+                filtered_data = filtered_data[filtered_data.index <= pd.to_datetime(self.end_date)]
+        elif 'Date' in filtered_data.columns:
+            filtered_data['Date'] = pd.to_datetime(filtered_data['Date'])
+            if self.start_date:
+                filtered_data = filtered_data[filtered_data['Date'] >= pd.to_datetime(self.start_date)]
+            if self.end_date:
+                filtered_data = filtered_data[filtered_data['Date'] <= pd.to_datetime(self.end_date)]
+
+        return filtered_data
+
+    def _apply_resampling(self, data):
+        """Apply timeframe resampling with OHLC aggregation."""
+        if data is None or data.empty or not self.interval:
+            return data
+
+        resampled_data = data.copy()
+
+        if not isinstance(resampled_data.index, pd.DatetimeIndex):
+            if 'Date' in resampled_data.columns:
+                resampled_data = resampled_data.set_index(pd.to_datetime(resampled_data['Date']))
             else:
-                # Fallback to first numeric column
-                numeric_cols = self.market_data.select_dtypes(include=[np.number]).columns
-                if len(numeric_cols) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=self.market_data['Date'],
-                        y=self.market_data[numeric_cols[0]],
-                        mode='lines',
-                        name=numeric_cols[0],
-                        line=dict(color='#1f77b4', width=2)
-                    ))
+                return data
+
+        # Build aggregation dictionary
+        agg_dict = {}
+        for col in resampled_data.columns:
+            if col in self.ohlc_agg:
+                agg_dict[col] = self.ohlc_agg[col]
+            elif resampled_data[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+                agg_dict[col] = 'mean'
+            else:
+                agg_dict[col] = 'last'
+
+        try:
+            resampled_data = resampled_data.resample(self.interval).agg(agg_dict)
+            resampled_data = resampled_data.dropna(how='all').reset_index()
+            return resampled_data
+        except Exception as e:
+            print(f"Resampling error: {e}")
+            return data
+
+    def _prepare_chart_data(self):
+        """Apply filtering and resampling pipeline."""
+        if self.original_data is None:
+            return self.market_data
+
+        chart_data = self.original_data.copy()
+        chart_data = self._apply_date_filter(chart_data)
+        chart_data = self._apply_resampling(chart_data)
+        return chart_data
+
+    def _get_x_data(self, data):
+        """Extract x-axis data from dataframe."""
+        if isinstance(data.index, pd.DatetimeIndex):
+            return data.index
+        elif 'date' in data.columns:
+            return data['date']
+        elif 'Date' in data.columns:
+            return data['Date']
         else:
-            # Empty placeholder
-            fig.add_trace(go.Scatter(x=[], y=[], mode='lines', name='No Data'))
-            
-        fig.update_layout(
-            title=self.title,
-            xaxis_title="Date",
-            yaxis_title="Price ($)",
-            height=self.height,
-            showlegend=True,
-            margin=dict(l=40, r=40, t=40, b=40)
-        )
-        
-        return fig
-    
-    def _create_candlestick_chart(self):
-        """Create a candlestick chart from market data"""
-        fig = go.Figure()
-        
-        if (self.market_data is not None and not self.market_data.empty and 
-            all(col in self.market_data.columns for col in ['Open', 'High', 'Low', 'Close'])):
-            
-            fig.add_trace(go.Candlestick(
-                x=self.market_data['Date'],
-                open=self.market_data['Open'],
-                high=self.market_data['High'],
-                low=self.market_data['Low'],
-                close=self.market_data['Close'],
-                name='OHLC'
-            ))
-        else:
-            # Fallback to empty chart with message
-            fig.add_annotation(
-                text="Candlestick chart requires Open, High, Low, Close data",
-                xref="paper", yref="paper",
-                x=0.5, y=0.5, showarrow=False,
-                font=dict(size=12, color="gray")
-            )
-            
-        fig.update_layout(
-            title=self.title,
-            xaxis_title="Date",
-            yaxis_title="Price ($)",
-            height=self.height,
-            xaxis_rangeslider_visible=False,
-            margin=dict(l=40, r=40, t=40, b=40)
-        )
-        
-        return fig
-    
+            return np.arange(0,len(data))
+
+    def _get_title_with_info(self):
+        """Generate title with timeframe and date range info."""
+        title = self.title
+        if self.interval:
+            title += f" ({self.interval})"
+        if self.start_date or self.end_date:
+            start = self.start_date or 'Start'
+            end = self.end_date or 'End'
+            title += f" [{start} to {end}]"
+        return title
+
     def get_chart_figure(self):
-        """Get the appropriate chart figure based on chart_type"""
-        if self.chart_type == 'candlestick':
-            return self._create_candlestick_chart()
+        """Generate the chart figure."""
+        chart_data = self._prepare_chart_data()
+
+        if chart_data is None or chart_data.empty:
+            fig = go.Figure()
+            fig.add_annotation(text="No data available", x=0.5, y=0.5, showarrow=False)
+            return fig
+
+        x_data = self._get_x_data(chart_data)
+
+        # Handle indicators with subplots
+        separate_indicators = [ind for ind in self.indicators if ind.get('axis') == 'separate']
+        if separate_indicators:
+            return self._create_subplot_chart(chart_data, x_data)
+
+        # Create main chart
+        fig = go.Figure()
+
+        if self.chart_type == 'candlestick' and all(
+                col in chart_data.columns for col in ['Open', 'High', 'Low', 'Close']):
+            fig.add_trace(go.Candlestick(x=x_data, open=chart_data['Open'], high=chart_data['High'],
+                                         low=chart_data['Low'], close=chart_data['Close'], name='OHLC'))
         else:
-            return self._create_line_chart()
-    
-    def get_chart_component(self):
-        """Get the complete Dash component with styling"""
-        # Determine CSS float style
-        float_style = {}
-        if self.float_position:
-            float_style['float'] = self.float_position
-        
-        style = {
-            'width': self.width,
-            'border': '2px solid #34495e',
-            'padding': '10px',
-            'margin': self.margin,
-            **float_style
-        }
-        
-        return html.Div([
-            html.H4(self.title, style={'text-align': 'center', 'margin': '10px 0'}),
-            dcc.Graph(
-                id=self.chart_id,
-                figure=self.get_chart_figure()
-            )
-        ], style=style)
-    
-    def update_data(self, new_data):
-        """Update the chart with new market data"""
-        self.market_data = new_data
-        return self.get_chart_figure()
-    
-    def change_chart_type(self, new_type):
-        """Change between line and candlestick chart types"""
-        self.chart_type = new_type
+            # Line chart
+            y_col = 'Close' if 'Close' in chart_data.columns else ('Price' if 'Price' in chart_data.columns else
+                                                                   chart_data.select_dtypes(
+                                                                       include=[np.number]).columns[0] if len(
+                                                                       chart_data.select_dtypes(
+                                                                           include=[np.number]).columns) > 0 else None)
+
+            if y_col:
+                fig.add_trace(go.Scatter(x=x_data, y=chart_data[y_col], mode='lines', name=y_col,
+                                         line=dict(color=self.line_color, width=2)))
+
+        # Add overlay indicators
+        overlay_indicators = [ind for ind in self.indicators if ind.get('axis') != 'separate']
+        for indicator in overlay_indicators:
+            self._add_indicator_traces(fig, indicator)
+
+        fig.update_layout(
+            title=self._get_title_with_info(),
+            xaxis_title="Date", yaxis_title="Price ($)",
+            height=self.height, margin=dict(l=40, r=40, t=40, b=40),
+            xaxis_rangeslider_visible=(self.chart_type == 'line')
+        )
+
+        return fig
+
+    def _create_subplot_chart(self, chart_data, x_data):
+        """Create chart with subplots for separate indicators."""
+        separate_indicators = [ind for ind in self.indicators if ind.get('axis') == 'separate']
+        num_subplots = 1 + len(separate_indicators)
+
+        row_heights = [0.7] + [0.3 / len(separate_indicators)] * len(separate_indicators)
+        subplot_titles = [self.title] + [ind.get('name', f'Indicator {i + 1}') for i, ind in
+                                         enumerate(separate_indicators)]
+
+        fig = make_subplots(rows=num_subplots, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                            subplot_titles=subplot_titles, row_heights=row_heights)
+
+        # Add main chart
+        if self.chart_type == 'candlestick' and all(
+                col in chart_data.columns for col in ['Open', 'High', 'Low', 'Close']):
+            fig.add_trace(go.Candlestick(x=x_data, open=chart_data['Open'], high=chart_data['High'],
+                                         low=chart_data['Low'], close=chart_data['Close'], name='OHLC'), row=1, col=1)
+        else:
+            y_col = 'Close' if 'Close' in chart_data.columns else chart_data.select_dtypes(include=[np.number]).columns[
+                0]
+            fig.add_trace(go.Scatter(x=x_data, y=chart_data[y_col], mode='lines', name=y_col,
+                                     line=dict(color=self.line_color, width=2)), row=1, col=1)
+
+        # Add overlay indicators to main chart
+        overlay_indicators = [ind for ind in self.indicators if ind.get('axis') != 'separate']
+        for indicator in overlay_indicators:
+            self._add_indicator_traces(fig, indicator, row=1, col=1)
+
+        # Add separate indicators
+        for i, indicator in enumerate(separate_indicators):
+            self._add_indicator_traces(fig, indicator, row=i + 2, col=1)
+
+        fig.update_layout(title=self._get_title_with_info(), height=self.height,
+                          margin=dict(l=40, r=40, t=40, b=40), xaxis_rangeslider_visible=False)
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+
+        return fig
+
+    def _add_indicator_traces(self, fig, indicator, row=None, col=None):
+        """Add indicator traces to figure."""
+        data = indicator.get('data')
+        y_columns = indicator.get('y_columns', [])
+        colors = indicator.get('colors', ['#ff7f0e', '#2ca02c', '#d62728'])
+
+        if data is None or data.empty or not y_columns:
+            return
+
+        x_data = self._get_x_data(data)
+
+        for i, column in enumerate(y_columns):
+            if column not in data.columns:
+                continue
+
+            trace = go.Scatter(x=x_data, y=data[column], mode='lines', name=column,
+                               line=dict(color=colors[i % len(colors)], width=1.5))
+
+            if row and col:
+                fig.add_trace(trace, row=row, col=col)
+            else:
+                fig.add_trace(trace)
+
+    def plot_indicator(self, config):
+        """Add indicator to chart."""
+        required_keys = ['key_type', 'axis', 'data', 'y_columns']
+        for key in required_keys:
+            if key not in config:
+                raise ValueError(f"Missing required key '{key}' in indicator config")
+
+        config.setdefault('name', f"Indicator {len(self.indicators) + 1}")
+        self.indicators.append(config)
         return self.get_chart_figure()
 
+    def set_timeframe_config(self, resample_freq=None, start_date=None, end_date=None):
+        """Update timeframe configuration."""
+        self.interval = resample_freq
+        self.start_date = start_date
+        self.end_date = end_date
+        self.market_data = self._prepare_chart_data()
+        return self.get_chart_figure()
+
+    def load_ticker_data(self):
+        """Load market data for ticker."""
+        if self.market_table:
+            data = self.market_table.get_historical(self.ticker, self.start_date, self.end_date, self.resample, self.interval)
+            if data is not None:
+                try:
+                    data['Date'] = data.index
+                except Exception as e:
+                    print(f'Exception No date index')
+                self.original_data = data.copy()
+                self.market_data = self._prepare_chart_data()
+                return self.get_chart_figure()
+        return None
 
 class FundamentalChart:
     """
     A reusable supply and demand chart component that reads data from HDF5 files.
-    
+
     Parameters:
     - chart_id: Unique identifier for the chart
     - title: Chart title
@@ -172,51 +276,36 @@ class FundamentalChart:
     - float_position: 'left', 'right', or None for CSS float positioning
     - margin: Margin string (e.g., '5px 1%')
     """
-    
-    def __init__(self, chart_id, TableClient, starting_key=None, title="Supply/Demand Chart", x_column='Date', chart_type='bar',
-                 width='49%',line_color='blue', height=300, float_position='left', margin='5px 1%'):
+
+    def __init__(self, chart_id, data=None, config=None, title="Supply/Demand Chart",
+                 x_column='Date', chart_type='bar',
+                 width='49%', line_color='blue', height=300, float_position='left', margin='5px 1%'):
+        config = {} if config is None else config
+        self.config = config
         self.chart_id = chart_id
-        self.line_color = line_color
-        self.title = title
-        self.table_client = TableClient
-        self.hdf_file_path = TableClient.table_db
-        self.hdf_key = starting_key
-
-        self.chart_type = chart_type
-        self.width = width
-        self.height = height
-        self.float_position = float_position
-        self.margin = margin
-        self.data = None
-
-        # Load data if file path and key are provided
-        if self.hdf_file_path and self.hdf_key:
-            self._load_data()
-        self.y_column = self.data.columns[0]
-        self.x_column = x_column
-
+        self.line_color = config.get('line_color', line_color)
+        self.title = config.get('title', title)
+        self.data = config.get('data', None)
+        self.chart_type = config.get('chart_type', chart_type)
+        self.width = config.get('width', width)
+        self.height = config.get('height', height)
+        self.float_position = config.get('float_position', float_position)
+        self.margin = config.get('margin', margin)
+        self.y_column = config.get('y_column', None)
+        self.x_column = config.get('x_column', x_column)
 
     def _load_data(self):
         """Load data from HDF5 file using TableClient"""
-        try:
-            self.data = self.table_client.get_key(self.hdf_key, use_prefix=True)
-            print(f"Successfully loaded data for key: {self.hdf_key}")
-            if len(self.data.columns) == 1:
-                self.y_column =self.data.columns[0]
-                self.title = self.y_column
+        return
 
-        except Exception as e:
-            print(f"Error loading data: {e}")
-            self.data = None
-    
     def _create_bar_chart(self):
         """Create a bar chart from the data"""
         fig = go.Figure()
-        
+
         if self.data is not None and not self.data.empty:
             if self.y_column in self.data.columns:
                 x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
-                
+
                 fig.add_trace(go.Bar(
                     x=x_data,
                     y=self.data[self.y_column],
@@ -235,7 +324,7 @@ class FundamentalChart:
         else:
             # Placeholder data
             fig.add_trace(go.Bar(x=[], y=[], name='No Data'))
-            
+
         fig.update_layout(
             title=self.title,
             xaxis_title=self.x_column,
@@ -243,17 +332,31 @@ class FundamentalChart:
             height=self.height,
             margin=dict(l=40, r=40, t=40, b=40)
         )
-        
+
         return fig
-    
+
+    def update_config(self, config: dict):
+        """Updates config using a dictionary"""
+        self.line_color = config.get('line_color', self.line_color)
+        self.title = config.get('title', self.title)
+        self.chart_type = config.get('chart_type', self.chart_type)
+        self.width = config.get('width', self.width)
+        self.height = config.get('height', self.height)
+        self.float_position = config.get('float_position', self.float_position)
+        self.margin = config.get('margin', self.margin)
+        self.data = config.get('data', self.data)
+
+
+        return self.get_chart_figure()
+
     def _create_line_chart(self):
         """Create a line chart from the data"""
         fig = go.Figure()
-        
+
         if self.data is not None and not self.data.empty:
             if self.y_column in self.data.columns:
                 x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
-                
+
                 fig.add_trace(go.Scatter(
                     x=x_data,
                     y=self.data[self.y_column],
@@ -271,7 +374,7 @@ class FundamentalChart:
                 )
         else:
             fig.add_trace(go.Scatter(x=[], y=[], mode='lines', name='No Data'))
-            
+
         fig.update_layout(
             title=self.title,
             xaxis_title=self.x_column,
@@ -279,17 +382,17 @@ class FundamentalChart:
             height=self.height,
             margin=dict(l=40, r=40, t=40, b=40)
         )
-        
+
         return fig
-    
+
     def _create_area_chart(self):
         """Create an area chart from the data"""
         fig = go.Figure()
-        
+
         if self.data is not None and not self.data.empty:
             if self.y_column in self.data.columns:
                 x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
-                
+
                 fig.add_trace(go.Scatter(
                     x=x_data,
                     y=self.data[self.y_column],
@@ -309,7 +412,7 @@ class FundamentalChart:
                 )
         else:
             fig.add_trace(go.Scatter(x=[], y=[], mode='lines', name='No Data'))
-            
+
         fig.update_layout(
             title=self.title,
             xaxis_title=self.x_column,
@@ -317,9 +420,9 @@ class FundamentalChart:
             height=self.height,
             margin=dict(l=40, r=40, t=40, b=40)
         )
-        
+
         return fig
-    
+
     def get_chart_figure(self):
         """Get the appropriate chart figure based on chart_type"""
         if self.chart_type == 'line':
@@ -328,14 +431,14 @@ class FundamentalChart:
             return self._create_area_chart()
         else:
             return self._create_bar_chart()
-    
+
     def get_chart_component(self):
         """Get the complete Dash component with styling"""
         # Determine CSS float style
         float_style = {}
         if self.float_position:
             float_style['float'] = self.float_position
-        
+
         style = {
             'width': self.width,
             'border': '2px solid #34495e',
@@ -343,7 +446,7 @@ class FundamentalChart:
             'margin': self.margin,
             **float_style
         }
-        
+
         return html.Div([
             html.H4(self.title, style={'text-align': 'center', 'margin': '10px 0'}),
             dcc.Graph(
@@ -352,29 +455,29 @@ class FundamentalChart:
             )
         ], style=style)
 
-    def update_data_source(self, new_hdf_file_path, new_hdf_key):
+    def update_data_source(self, data, y_column=None):
         """Update the data source and reload data"""
-        self.hdf_file_path = new_hdf_file_path
-        self.hdf_key = new_hdf_key
-        self._load_data()
+        self.data = data
+        self.y_column = y_column if y_column else self.data.select_dtypes(include=[np.number], exclude=[datetime, 'object']).columns[0]
+
         return self.get_chart_figure()
 
     def change_y_column(self, new_y_column):
         """Change the y-axis column"""
         self.y_column = new_y_column
         return self.get_chart_figure()
-    
+
     def change_chart_type(self, new_chart_type):
-        """Change the chart type"""
+        """Change the chart key_type"""
         self.chart_type = new_chart_type
         return self.get_chart_figure()
-    
+
     def get_available_columns(self):
         """Get list of available columns in the loaded data"""
         if self.data is not None:
             return list(self.data.columns)
         return []
-    
+
     def get_data_info(self):
         """Get basic information about the loaded data"""
         if self.data is not None:
@@ -386,6 +489,96 @@ class FundamentalChart:
             }
         return None
 
+
+class COTPlotter:
+    """Professional COT report visualization with industry-standard styling."""
+
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.copy()
+        self.prepare_data()
+
+        self.colors = {
+            'commercials': '#FF6B6B',
+            'non_commercials': '#4ECDC4',
+            'small_speculators': '#45B7D1',
+            'swap_dealers': '#96CEB4',
+            'money_managers': '#FFEAA7',
+            'other_reportables': '#DDA0DD'
+        }
+
+    def prepare_data(self):
+        """Prepare and clean COT data with flexible column mapping."""
+        if 'date' in self.df.columns:
+            self.df['date'] = pd.to_datetime(self.df['date'])
+            self.df = self.df.sort_values('date')
+        elif isinstance(self.df.index, pd.DatetimeIndex):
+            self.df = self.df.sort_index()
+
+        def find_column(patterns):
+            for pattern in patterns:
+                for col in self.df.columns:
+                    if pattern.lower() in col.lower():
+                        return col
+            return None
+
+        # Map common COT column variations and calculate net positions
+        mappings = [
+            (['producer_merchant_processor_user_longs', 'comm_long', 'commercial_long'],
+             ['producer_merchant_processor_user_shorts', 'comm_short', 'commercial_short'],
+             'producer_merchant_net'),
+            (['swap_dealer_longs', 'swap_long'], ['swap_dealer_shorts', 'swap_short'], 'swap_dealer_net'),
+            (['money_manager_longs', 'mm_long', 'asset_mgr_longs'],
+             ['money_manager_shorts', 'mm_short', 'asset_mgr_shorts'], 'money_manager_net'),
+            (['other_reportable_longs', 'other_long'], ['other_reportable_shorts', 'other_short'],
+             'other_reportable_net')
+        ]
+
+        for long_patterns, short_patterns, net_col in mappings:
+            long_col = find_column(long_patterns)
+            short_col = find_column(short_patterns)
+            if long_col and short_col:
+                self.df[net_col] = self.df[long_col] - self.df[short_col]
+
+        # Calculate total non-commercial positions
+        swap_long = find_column(['swap_dealer_longs', 'swap_long'])
+        mm_long = find_column(['money_manager_longs', 'mm_long'])
+        swap_short = find_column(['swap_dealer_shorts', 'swap_short'])
+        mm_short = find_column(['money_manager_shorts', 'mm_short'])
+
+        if swap_long and mm_long:
+            self.df['non_commercial_longs'] = self.df[swap_long] + self.df[mm_long]
+        if swap_short and mm_short:
+            self.df['non_commercial_shorts'] = self.df[swap_short] + self.df[mm_short]
+        if 'non_commercial_longs' in self.df.columns and 'non_commercial_shorts' in self.df.columns:
+            self.df['non_commercial_net'] = self.df['non_commercial_longs'] - self.df['non_commercial_shorts']
+
+    def plot_cot_report(self, show_net_positions: bool = True, title: str = "COT Report",
+                        height: int = 400) -> go.Figure:
+        """Create professional COT report visualization."""
+        x_data = self.df['date'] if 'date' in self.df.columns else self.df.index
+
+        fig = go.Figure()
+
+        if show_net_positions:
+            traces = [
+                ('producer_merchant_net', 'Commercials (Net)', self.colors['commercials']),
+                ('non_commercial_net', 'Non-Commercials (Net)', self.colors['non_commercials'])
+            ]
+
+            for col, name, color in traces:
+                if col in self.df.columns:
+                    fig.add_trace(go.Scatter(x=x_data, y=self.df[col], name=name,
+                                             line=dict(color=color, width=2)))
+
+            fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.3)
+
+        fig.update_layout(
+            title=title, height=height, hovermode='x unified',
+            xaxis_title="Date", yaxis_title="Contracts",
+            margin=dict(l=40, r=40, t=60, b=40)
+        )
+
+        return fig
 
 class MultiChart(FundamentalChart):
     """
@@ -407,46 +600,33 @@ class MultiChart(FundamentalChart):
     - secondary_y_columns: List of columns to plot on secondary y-axis
     """
 
-    def __init__(self, chart_id, TableClient, keys, title="Multi-Series Chart", x_column='Date',
-                 chart_type='line', width='49%', line_colors=None, height=300,
+    def __init__(self, chart_id,config=None, data=None, y_columns=None, title="Multi-Series Chart", x_column='date',
+                 chart_type='line', width='49%', line_colors=['blue', 'red', 'green', 'purple'], height=300,
                  float_position='left', margin='5px 1%', dual_y=False, secondary_y_columns=None):
 
         # Initialize parent class without starting_key
-        super().__init__(chart_id, TableClient, title=title, x_column=x_column,
+        super().__init__(chart_id, title=title, x_column=x_column,
                          chart_type=chart_type, width=width, height=height,
                          float_position=float_position, margin=margin)
+        self.config = config if config else {}
 
-        self.keys = keys
-        self.line_colors = line_colors or ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'pink', 'gray']
-        self.dual_y = dual_y
-        self.secondary_y_columns = secondary_y_columns or []
-        self.selected_columns = []  # Columns to plot
-        self.data = None
+        self.line_colors = self.config.get('line_colors', line_colors)
+        self.dual_y = config.get('dual_y', dual_y)
+        self.secondary_y_columns = self.config.get('secondary_y_columns', secondary_y_columns)
+        self.y_columns = config.get('y_columns', [])  # Columns to plot
+        self.data = self.config.get('data', data)
 
         # Load data from multiple keys
-        self._load_multi_data()
-
         # Set default selected columns (all numeric columns)
-        if self.data is not None:
-            self.selected_columns = [col for col in self.data.columns
-                                     if col != self.x_column and pd.api.types.is_numeric_dtype(self.data[col])]
+        if self.data is not None and not self.y_columns:
+            self.y_columns = [col for col in self.data.columns
+                              if col != self.x_column and pd.api.types.is_numeric_dtype(self.data[col])]
 
-    def _load_multi_data(self):
-        """Load data from multiple keys using TableClient"""
-        try:
-            self.data = self.table_client.get_keys(self.keys)
-            print(f"Successfully loaded data for keys: {self.keys}")
-            print(f"Data shape: {self.data.shape}")
-            print(f"Columns: {list(self.data.columns)}")
-        except Exception as e:
-            print(f"Error loading multi-key data: {e}")
-            self.data = None
 
     def set_selected_columns(self, columns):
         """Set which columns to plot"""
         if self.data is not None:
-            available_cols = [col for col in self.data.columns if col != self.x_column]
-            self.selected_columns = [col for col in columns if col in available_cols]
+            self.y_columns = [col for col in columns if col in available_cols]
         return self
 
     def set_secondary_y_columns(self, columns):
@@ -467,10 +647,10 @@ class MultiChart(FundamentalChart):
         else:
             fig = go.Figure()
 
-        if self.data is not None and not self.data.empty and self.selected_columns:
+        if self.data is not None and not self.data.empty and self.y_columns:
             x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
 
-            for i, col in enumerate(self.selected_columns):
+            for i, col in enumerate(self.y_columns):
                 if col in self.data.columns:
                     color = self.line_colors[i % len(self.line_colors)]
 
@@ -498,8 +678,8 @@ class MultiChart(FundamentalChart):
         # Update layout
         if self.dual_y and self.secondary_y_columns:
             # Set y-axes titles
-            primary_cols = [col for col in self.selected_columns if col not in self.secondary_y_columns]
-            secondary_cols = [col for col in self.selected_columns if col in self.secondary_y_columns]
+            primary_cols = [col for col in self.y_columns if col not in self.secondary_y_columns]
+            secondary_cols = [col for col in self.y_columns if col in self.secondary_y_columns]
 
             fig.update_yaxes(title_text=f"Primary: {', '.join(primary_cols)}", secondary_y=False)
             fig.update_yaxes(title_text=f"Secondary: {', '.join(secondary_cols)}", secondary_y=True)
@@ -523,10 +703,10 @@ class MultiChart(FundamentalChart):
         """Create a multi-series bar chart"""
         fig = go.Figure()
 
-        if self.data is not None and not self.data.empty and self.selected_columns:
+        if self.data is not None and not self.data.empty and self.y_columns:
             x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
 
-            for i, col in enumerate(self.selected_columns):
+            for i, col in enumerate(self.y_columns):
                 if col in self.data.columns:
                     color = self.line_colors[i % len(self.line_colors)]
 
@@ -555,10 +735,10 @@ class MultiChart(FundamentalChart):
         """Create a multi-series area chart (stacked)"""
         fig = go.Figure()
 
-        if self.data is not None and not self.data.empty and self.selected_columns:
+        if self.data is not None and not self.data.empty and self.y_columns:
             x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
 
-            for i, col in enumerate(self.selected_columns):
+            for i, col in enumerate(self.y_columns):
                 if col in self.data.columns:
                     color = self.line_colors[i % len(self.line_colors)]
 
@@ -588,10 +768,10 @@ class MultiChart(FundamentalChart):
         """Create a chart with normalized data (0-100 scale)"""
         fig = go.Figure()
 
-        if self.data is not None and not self.data.empty and self.selected_columns:
+        if self.data is not None and not self.data.empty and self.y_columns:
             x_data = self.data[self.x_column] if self.x_column in self.data.columns else self.data.index
 
-            for i, col in enumerate(self.selected_columns):
+            for i, col in enumerate(self.y_columns):
                 if col in self.data.columns:
                     # Normalize data to 0-100 scale
                     col_data = self.data[col]
@@ -671,13 +851,13 @@ class MultiChart(FundamentalChart):
                 dcc.Dropdown(
                     id=f'{self.chart_id}_column_selector',
                     options=column_options,
-                    value=self.selected_columns,
+                    value=self.y_columns,
                     multi=True,
                     style={'margin-bottom': '10px'}
                 )
             ]),
 
-            # Chart type selector
+            # Chart key_type selector
             html.Div([
                 html.Label("Chart Type:", style={'font-weight': 'bold', 'margin-bottom': '5px'}),
                 dcc.RadioItems(
@@ -716,11 +896,15 @@ class MultiChart(FundamentalChart):
 
     def update_selected_columns(self, selected_columns):
         """Update selected columns and return new figure"""
-        self.selected_columns = selected_columns
+        self.y_columns = selected_columns
         return self.get_chart_figure()
+    def update_data_source(self, data, y_columns=None):
+        self.data = data
+        self.y_columns = y_columns if y_columns else self.data.select_dtypes(include=[np.number], exclude=['object', datetime]).columns.tolist()
+
 
     def update_chart_type(self, chart_type):
-        """Update chart type and return new figure"""
+        """Update chart key_type and return new figure"""
         self.chart_type = chart_type
         return self.get_chart_figure()
 
@@ -740,65 +924,17 @@ class MultiChart(FundamentalChart):
 
     def get_correlation_matrix(self):
         """Get correlation matrix for selected columns"""
-        if self.data is not None and self.selected_columns:
-            return self.data[self.selected_columns].corr()
+        if self.data is not None and self.y_columns:
+            return self.data[self.y_columns].corr()
         return None
 
 
-# Example usage and testing functions
-def create_sample_market_data():
-    """Create sample market data for testing"""
-    dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
-    np.random.seed(42)  # For reproducible results
-    
-    # Create OHLC data
-    base_price = 75
-    prices = []
-    current_price = base_price
-    
-    for _ in range(100):
-        daily_change = np.random.normal(0, 2)
-        current_price += daily_change
-        
-        # Generate OHLC from current price
-        open_price = current_price + np.random.normal(0, 0.5)
-        high_price = max(open_price, current_price) + abs(np.random.normal(0, 1))
-        low_price = min(open_price, current_price) - abs(np.random.normal(0, 1))
-        close_price = current_price + np.random.normal(0, 0.5)
-        
-        prices.append({
-            'Open': open_price,
-            'High': high_price,
-            'Low': low_price,
-            'Close': close_price,
-            'Price': close_price  # Also include simple price column
-        })
-    
-    df = pd.DataFrame(prices)
-    df['Date'] = dates
-    df['Volume'] = np.random.randint(10000, 100000, size=100)
-    
-    return df
-
-def create_sample_supply_demand_data():
-    """Create sample supply/demand data for testing"""
-    dates = pd.date_range(start='2023-01-01', periods=12, freq='M')
-    
-    data = {
-        'Date': dates,
-        'Value': np.random.randint(80, 120, 12),
-        'Supply': np.random.randint(75, 115, 12),
-        'Demand': np.random.randint(85, 125, 12),
-        'Production': np.random.randint(70, 110, 12)
-    }
-    
-    return pd.DataFrame(data)
 
 # Example usage
 if __name__ == "__main__":
     # Test MarketChart
     sample_market_data = create_sample_market_data()
-    
+
     market_chart = MarketChart(
         chart_id='test-market-chart',
         title='Test Market Chart',
@@ -807,10 +943,10 @@ if __name__ == "__main__":
         width='600px',
         height=400
     )
-    
+
     print("Market Chart created successfully")
     print(f"Chart has {len(sample_market_data)} data points")
-    
+
     # Test FundamentalChart (without actual HDF5 file)
     supply_chart = FundamentalChart(
         chart_id='test-supply-chart',
@@ -820,9 +956,9 @@ if __name__ == "__main__":
         width='600px',
         height=400
     )
-    
+
     # Manually set data for testing
     supply_chart.data = create_sample_supply_demand_data()
-    
+
     print("Supply/Demand Chart created successfully")
     print(f"Available columns: {supply_chart.get_available_columns()}")

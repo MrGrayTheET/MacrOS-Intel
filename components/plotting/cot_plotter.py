@@ -23,6 +23,7 @@ class COTPlotter:
             'money_managers': '#FFEAA7',
             'other_reportables': '#DDA0DD'
         }
+
         
     def prepare_data(self):
         """Prepare and clean the data for plotting."""

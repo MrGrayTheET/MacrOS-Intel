@@ -69,9 +69,9 @@ app.layout = html.Div([
                 html.H4("Charts menu",
                         style={'text-align': 'center', 'margin': '10px 0', 'font-size': '14px'}),
                 html.Hr(),
-                # Add chart type selection
+                # Add chart key_type selection
                 dcc.RadioItems(
-                    id='chart-type-radio',
+                    id='chart-key_type-radio',
                     options=[
                         {'label': 'Line Chart', 'value': 'line'},
                         {'label': 'Candlestick', 'value': 'candlestick'},
@@ -81,7 +81,7 @@ app.layout = html.Div([
                     value='line',
                     style={'margin': '10px 0'}
                 ),
-                # Add time period selection
+                # Add time interval selection
                 dcc.Dropdown(
                     id='timeframe-dropdown',
                     options=[
@@ -317,7 +317,7 @@ def render_infotable_content(active_tab):
      Output('supply-demand-chart-1', 'figure'),
      Output('supply-demand-chart-2', 'figure')],
     [Input('commodity-dropdown', 'value'),
-     Input('chart-type-radio', 'value'),
+     Input('chart-key_type-radio', 'value'),
      Input('timeframe-dropdown', 'value')]
 )
 def update_charts(commodity, chart_type, timeframe):

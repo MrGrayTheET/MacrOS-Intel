@@ -17,6 +17,8 @@ if not os.path.exists(data_path):
 with open('data_sources/COT/futures_mappings.toml') as f:
     contract_map = toml.load(f)
 
+
+# noinspection PyTypeChecker
 class COT:
 
     table_folder = Path(data_path, 'COT')
