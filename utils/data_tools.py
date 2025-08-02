@@ -69,16 +69,20 @@ def load_contract_keys(table_client):
 
 def calc_contract_spreads(df, second_month=False):
     contract_cols = sorted([k for k in df.columns if futures_pattern.match(k) or k.endswith('prices')], reverse=False)
-
-    front_month = contract_cols[0]
-    for i in range(1, len(contract_cols)):
-        df[f'spread_1_{i+1}'] = df[front_month] - df[contract_cols[i]]
+    spread_df = df[contract_cols].diff(axis=1)
+    spread_cols = []
+    df = df.drop_duplicates(subset=contract_cols)
+    for i in range(2, len(contract_cols)):
+        df[f'spread_1_{i}'] = spread_df[f'NG_{i}_prices']
+        spread_cols.append(f'spread_1_{i}')
+        df[f'{spread_cols[-1]}_1mo_return'] = df[spread_cols[-1]].resample('1M').last().diff(-1)
+        df[f'{spread_cols[-1]}_1wk_return'] = df[spread_cols[-1]].resample('1W').last().diff(-1)
         if second_month:
-            if i !=1:
-                df[f'spread_2_{i+1}'] = df[contract_cols[1]] -df[contract_cols[i]]
-                df[f'spread_2_{i + 1}_log_return'] = np.log(df[f'spread_2_{i + 1}'] / df[f'spread_2_{i + 1}'].shift(1))
-
-        df[f'spread_1_{i+1}_log_return'] = np.log(df[f'spread_1_{i+1}'] / df[f'spread_1_{i+1}'].shift(1))
+            if i >2 :
+                df[f'spread_2_{i}'] = df[contract_cols[1]] - df[contract_cols]
+                spread_cols.append(f'spread_2_{i}')
+                df[f'{spread_cols[-1]}_1mo_return'] = df[spread_cols[-1]].resample('1M').last().diff(-1)
+                df[f'{spread_cols[-1]}_1wk_return'] = df[spread_cols[-1]].resample('1W').last().diff(-1)
 
     return df
 
