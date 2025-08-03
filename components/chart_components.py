@@ -1,5 +1,5 @@
 
-from sources.data_tables import MarketTable
+from data.data_tables import MarketTable
 from dash import dcc, html
 from datetime import  datetime
 import plotly.graph_objects as go
@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-from utils import key_to_name
+
 class MarketChart:
     """Enhanced chart component with timeframe resampling and indicator support."""
 
