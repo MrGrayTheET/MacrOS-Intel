@@ -1,30 +1,94 @@
 import datetime
 import os
-from dotenv import load_dotenv
-
-load_dotenv('.env')
-from copy import deepcopy
 from pathlib import Path
 import pandas as pd
 import requests
 import toml
-from myeia import API
-import datetime as dt
-from nasspython.nass_api import nass_param, nass_data
-from sources.usda.nass_utils import calc_dates, clean_numeric_column as clean_col, clean_fas
-from sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict
-from sources.usda.api_wrappers.esr_api import USDAESR
-from utils import walk_dict, key_to_name
-from typing import List
+from copy import deepcopy
+import numpy as np
 
-store_folder = os.getenv('data_path')
-os.chdir('C:\\Users\\nicho\PycharmProjects\macrOS-Int\\')
-with open('C:\\Users\\nicho\PycharmProjects\macrOS-Int\data_sources\eia\data_mapping.toml') as m:
-    table_mapping = toml.load(m)
+# Import from config instead of using dotenv directly
+try:
+    from config import (
+        DATA_PATH, MARKET_DATA_PATH, COT_PATH,
+        NASS_TOKEN, FAS_TOKEN, EIA_KEY,
+        load_mapping, PROJECT_ROOT
+    )
+except ImportError:
+    # Fallback for when config.py doesn't exist
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    DATA_PATH = os.getenv('data_path', './data')
+    MARKET_DATA_PATH = os.getenv('market_data_path', './data/market')
+    COT_PATH = os.getenv('cot_path', './data/cot')
+    NASS_TOKEN = os.getenv('NASS_TOKEN', '')
+    PROJECT_ROOT = Path(__file__).parent.parent
+
+# Import external APIs
+try:
+    from myeia import API
+    from nasspython.nass_api import nass_param, nass_data
+except ImportError as e:
+    print(f"Warning: Could not import external APIs: {e}")
+    API = None
+    nass_param = None
+    nass_data = None
+
+# Import local modules with proper paths
+try:
+    # Update import paths to match your structure
+    from data.sources.usda.nass_utils import calc_dates, clean_numeric_column as clean_col, clean_fas
+    from data.sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict
+    from data.sources.usda.api_wrappers.esr_api import USDAESR
+except ImportError as e:
+    print(f"Warning: Could not import USDA modules: {e}")
+    # Provide None or mock objects
+    calc_dates = None
+    clean_col = None
+    clean_fas = None
+    PSD_API = None
+    USDAESR = None
+
+# Import utilities
+try:
+    from utils import walk_dict, key_to_name
+except ImportError:
+    # Provide simple fallback implementations
+    def walk_dict(d, parent_key=()):
+        for k, v in d.items():
+            full_key = parent_key + (k,)
+            if isinstance(v, dict):
+                yield from walk_dict(v, full_key)
+            else:
+                yield full_key, v
 
 
-# noinspection PyTypeChecker
+    def key_to_name(table_key):
+        key_parts = table_key.rsplit('/')
+        name = f"{key_parts[-1]}_{key_parts[-2]}"
+        return name
+
+# Store folder
+store_folder = Path(DATA_PATH)
+store_folder.mkdir(parents=True, exist_ok=True)
+
+# Load table mapping with proper path
+try:
+    mapping_path = PROJECT_ROOT / 'data' / 'sources' / 'eia' / 'data_mapping.toml'
+    if mapping_path.exists():
+        with open(mapping_path) as m:
+            table_mapping = toml.load(m)
+    else:
+        print(f"Warning: EIA mapping file not found at {mapping_path}")
+        table_mapping = {}
+except Exception as e:
+    print(f"Error loading table mapping: {e}")
+    table_mapping = {}
+
+
 class TableClient:
+    """Base class for table data access"""
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None, api_data_col=None,
                  rename_on_load=False):
@@ -33,10 +97,10 @@ class TableClient:
         self.table_db = Path(self.data_folder, db_file_name)
         self.data_col = api_data_col
         self.rename = rename_on_load
-        self.app_path = os.getenv('APP_PATH')
+        self.app_path = PROJECT_ROOT
 
-        if not os.path.exists(self.data_folder):
-            os.mkdir(self.data_folder)
+        # Create data folder if it doesn't exist
+        self.data_folder.mkdir(parents=True, exist_ok=True)
 
         if key_prefix is not None:
             self.prefix = key_prefix
@@ -44,186 +108,159 @@ class TableClient:
         self.client_params = {}
 
         if map_file:
-            with open(map_file) as m:
-                self.table_map_all = toml.load(m)
-            self.mapping = self.table_map_all[self.prefix] if self.prefix else self.table_map_all
-
-        return
+            try:
+                with open(map_file) as m:
+                    self.table_map_all = toml.load(m)
+                self.mapping = self.table_map_all[self.prefix] if self.prefix else self.table_map_all
+            except Exception as e:
+                print(f"Error loading map file {map_file}: {e}")
+                self.mapping = {}
+        else:
+            self.mapping = {}
 
     def available_keys(self):
-        with pd.HDFStore(self.table_db) as store:
-            if self.prefix:
-                tables = [k[1 + len(self.prefix):] for k in store.keys() if
-                          k[1:].startswith(self.prefix)]
-            else:
-                tables = [k[1:] for k in store.keys()]
-        return tables
-
-    def set_prefix(self, prefix):
-        self.prefix = prefix
+        """Get available keys from HDF5 store"""
+        try:
+            with pd.HDFStore(self.table_db, mode='r') as store:
+                if hasattr(self, 'prefix') and self.prefix:
+                    tables = [k[1 + len(self.prefix):] for k in store.keys() if
+                              k[1:].startswith(self.prefix)]
+                else:
+                    tables = [k[1:] for k in store.keys()]
+            return tables
+        except Exception as e:
+            print(f"Error accessing HDF5 store: {e}")
+            return []
 
     def get_key(self, key, use_prefix=True, use_simple_name=True):
-        with pd.HDFStore(self.table_db) as store:
-            key = f'{self.prefix}/{key}' if self.prefix and use_prefix else f'{key}'
-            table = store[f'{key}']
-        col_value = table.columns[0] if self.data_col is None else self.data_col
-        if use_simple_name:
-            new_name = key_to_name(key)
-            table = table.rename({col_value: new_name}, axis=1)
+        """Get data for a specific key"""
+        try:
+            with pd.HDFStore(self.table_db, mode='r') as store:
+                key = f'{self.prefix}/{key}' if hasattr(self, 'prefix') and self.prefix and use_prefix else f'{key}'
+                table = store[f'{key}']
 
-        return table
+            col_value = table.columns[0] if self.data_col is None else self.data_col
+            if use_simple_name:
+                new_name = key_to_name(key)
+                table = table.rename({col_value: new_name}, axis=1)
+
+            return table
+        except Exception as e:
+            print(f"Error getting key {key}: {e}")
+            return pd.DataFrame()
 
     def get_keys(self, keys: list, use_prefix=True, use_simple_name=True):
+        """Get data for multiple keys"""
         dfs = []
-        with pd.HDFStore(self.table_db) as store:
-            for k in keys:
-                key = f'{self.prefix}/{k}' if self.prefix and use_prefix else f'{k}'
-                table = store[f'{key}']
-                if isinstance(table, pd.DataFrame):
-
-                    if use_simple_name:
-                        col = key_to_name(k)
-                        if col in table.columns:
-                            data = table[col]
-                        elif self.data_col in table.columns and col not in table.columns:
-                            data = table[self.data_col]
-                        elif len(table.columns) == 1:
-                            data_col_value = table.columns[0] if self.data_col is None else self.data_col
-                            data = table.rename({data_col_value: col}, axis=1)
+        try:
+            with pd.HDFStore(self.table_db, mode='r') as store:
+                for k in keys:
+                    key = f'{self.prefix}/{k}' if hasattr(self, 'prefix') and self.prefix and use_prefix else f'{k}'
+                    try:
+                        table = store[f'{key}']
+                        if isinstance(table, pd.DataFrame):
+                            if use_simple_name:
+                                col = key_to_name(k)
+                                # Handle column renaming logic
+                                if len(table.columns) == 1:
+                                    data = table.rename({table.columns[0]: col}, axis=1)
+                                else:
+                                    data = table
+                        elif isinstance(table, pd.Series):
+                            table.rename(key_to_name(k), axis=1)
+                            data = table
                         else:
-                            k_split = k.split('/')
-                            data_col_value = self.mapping[k_split[1]][k_split[-1]]
-                            data = table.rename({data_col_value: col}, axis=1)
-                            data = data[col]
-                    else:
-                        data = table
-                        pass
+                            data = table
 
-                elif isinstance(table, pd.Series):
-                    table.rename(key_to_name(k), axis=1)
+                        dfs.append(data)
+                    except KeyError:
+                        print(f"Key {key} not found in store")
+                        continue
 
-                dfs.append(data)
-
-        key_df = pd.concat(dfs, axis=1)
-
-        return key_df
-
-    def get_cat(self, category, endswith='', rename_columns=False):
-        keys = [f'{category}/{k}' for k, v in self.mapping[category].items() if v.endswith(endswith)]
-        return self.get_keys(keys)
-
-    def update_request_params(self, param_dict):
-        self.client_params.update(param_dict)
-
-    def local_update(self, update_file_path: str, new_key: str, load_func, use_prefix=False):
-        df = load_func(update_file_path)
-        new_key = f'{self.prefix}/{new_key}' if use_prefix else new_key
-        df.to_hdf(self.table_db, f'{new_key}')
-
-        return
-
-    def update_from_dict(self, update_dict: dict, id_field='series_id', client_params={}, rename_column=False):
-        unprocessed_data = {}
-        failed_series = []
-        for k, v in walk_dict(update_dict):
-            self.client_params.update({id_field: v})
-            try:
-                data = self.client(**self.client_params)
-            except Exception as e:
-                print(f'Failed to get key {k}')
-                failed_series.append(k)
+            if dfs:
+                key_df = pd.concat(dfs, axis=1)
+                return key_df
             else:
-                if not isinstance(k, str) and len(k > 1):
-                    key = f'{self.prefix}/{k[-2]}/{k[-1]}'
-                    new_name = f'{k[-1]}_{k[-2]}'
-                else:
-                    key = f'{self.prefix}/{k}' if self.prefix else f'{k}'
-                    new_name = f'{k}'
-                if isinstance(data, pd.DataFrame) or isinstance(data, pd.Series):
-                    if rename_column:
-                        (data.rename({data.columns[0]: new_name}, inplace=True) if isinstance(data,
-                                                                                              pd.DataFrame)
-                         else data.rename(
-                            new_name, inplace=True))
-                    data.to_hdf(self.table_db, key)
-                    print('Data successfully saved to ' + key)
-                else:
-                    unprocessed_data.update({k: data})
-        if unprocessed_data or failed_series:
-            print(f'Failed to get following series:\n{failed_series}')
-            if unprocessed_data:
-                print(f'Data retrieved from client was not in dataframe format')
+                return pd.DataFrame()
 
-            return (unprocessed_data, failed_series)
-        else:
-            print('Successfully updated from dict')
-
-            return
+        except Exception as e:
+            print(f"Error getting keys: {e}")
+            return pd.DataFrame()
 
     def __getitem__(self, item):
-        if isinstance(item, List):
-
+        """Allow dict-like access"""
+        if isinstance(item, list):
             return self.get_keys(item, use_prefix=True, use_simple_name=self.rename)
         elif isinstance(item, str):
             return self.get_key(item, use_prefix=True, use_simple_name=self.rename)
 
-market_fp = os.getenv('market_data_path')
-cot_fp = os.getenv('cot_path')
 
-# noinspection PyTypeChecker
 class MarketTable:
     """Data access layer for market and COT data from HDF5 files."""
 
     def __init__(self, alias_file=None, initial_ticker=None, start_date=None, end_date=None, freq='1D'):
-        self.market_table_db = Path(market_fp)
-        self.cot_table_db = Path(cot_fp)
+        self.market_table_db = Path(MARKET_DATA_PATH) / 'market_data.h5'
+        self.cot_table_db = Path(COT_PATH) / 'cot_data.h5'
         self.ohlc_agg = {
-            'Open': 'first',  # First open of the period
-            'High': 'max',  # Highest high of the period
-            'Low': 'min',  # Lowest low of the period
-            'Close': 'last',  # Last close of the period
-            'Volume': 'sum'  # Total volume of the period
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
         }
+
+        # Load ticker mappings
         if not alias_file:
-            alias_file = 'C:\\Users\\nicho\PycharmProjects\macrOS-Int\\assets\plotting\chart_mappings.toml'
-            try:
+            alias_file = PROJECT_ROOT / 'components' / 'plotting' / 'chart_mappings.toml'
+
+        try:
+            if Path(alias_file).exists():
                 with open(alias_file, 'r') as f:
                     self.ticker_map = toml.load(f)
-            except FileNotFoundError:
+            else:
                 print(f"Warning: Alias file {alias_file} not found.")
-                self.ticker_map = {'aliases': {}}
-        else:
-            with open(alias_file, 'r') as f:
-                self.ticker_map = toml.load(f)
+                self.ticker_map = {}
+        except Exception as e:
+            print(f"Error loading alias file: {e}")
+            self.ticker_map = {}
 
     def get_historical(self, ticker, start_date='2015-01-01', end_date=None, resample=False, interval='1D'):
         """Get market data for a ticker."""
         try:
-            with pd.HDFStore(self.market_table_db, mode='r') as store:
-                if ticker in self.ticker_map.keys():
-                    key = self.ticker_map[ticker]['market_ticker']
-                    data = store[key]
-                elif ticker in [t[1:] for t in store.keys()]:
-                    data = store[ticker]
-                    data.index = pd.to_datetime(data.index) if not isinstance(data.index,
-                                                                              pd.DatetimeIndex) else data.index
+            if not self.market_table_db.exists():
+                print(f"Market data file not found: {self.market_table_db}")
+                return None
 
+            with pd.HDFStore(self.market_table_db, mode='r') as store:
+                if ticker in self.ticker_map:
+                    key = self.ticker_map[ticker].get('market_ticker', ticker)
+                else:
+                    key = ticker
+
+                if key in store:
+                    data = store[key]
+                elif f'/{key}' in store:
+                    data = store[f'/{key}']
                 else:
                     print(f'Ticker {ticker} not found. Available: {list(store.keys())}')
                     return None
 
-            df = data.resample(interval).apply(self.ohlc_agg) if resample else data
+            # Process data
+            if not isinstance(data.index, pd.DatetimeIndex):
+                data.index = pd.to_datetime(data.index)
 
-            if not start_date and not end_date:
-                return df
-            elif start_date and not end_date:
-                mask = data.index >= dt.datetime.strptime(start_date, '%y-%m-%d')
-            elif end_date and not start_date:
-                mask = data.index <= dt.datetime.strptime(end_date, '%y-%m-%d')
-            else:
-                return df.loc[start_date:end_date]
+            # Apply date filtering
+            if start_date:
+                data = data[data.index >= pd.to_datetime(start_date)]
+            if end_date:
+                data = data[data.index <= pd.to_datetime(end_date)]
 
-            return data.loc[mask]
+            # Resample if requested
+            if resample and interval:
+                data = data.resample(interval).agg(self.ohlc_agg)
+
+            return data
+
         except Exception as e:
             print(f"Error accessing market data: {e}")
             return None
@@ -231,29 +268,40 @@ class MarketTable:
     def get_cot(self, commodity, filter_by_type='F_ALL', start_date=None, end_date=None):
         """Get COT data for a commodity."""
         try:
+            if not self.cot_table_db.exists():
+                print(f"COT data file not found: {self.cot_table_db}")
+                return None
+
             with pd.HDFStore(self.cot_table_db, mode='r') as store:
-                if commodity in self.ticker_map.keys():
-                    key = self.ticker_map[commodity]['cot_name']
+                if commodity in self.ticker_map:
+                    key = self.ticker_map[commodity].get('cot_name', commodity)
+                else:
+                    key = commodity
+
+                if key in store:
                     data = store[key]
-                elif commodity in [t[1:] for t in store.keys()]:
-                    data = store[commodity]
+                elif f'/{key}' in store:
+                    data = store[f'/{key}']
                 else:
                     print(f'Commodity {commodity} not found. Available: {list(store.keys())}')
                     return None
 
-            data['Date'] = pd.to_datetime(data['date'])
-            data = data.loc[data['key_type'] == filter_by_type].sort_values(by='Date')
+            # Process COT data
+            if 'date' in data.columns:
+                data['Date'] = pd.to_datetime(data['date'])
 
-            if not start_date and not end_date:
-                return data
-            elif start_date and not end_date:
-                mask = data.index >= dt.datetime.strptime(start_date)
-            elif end_date and not start_date:
-                mask = data.index <= dt.datetime.strptime(end_date)
-            else:
-                return data.loc[start_date:end_date]
+            if 'key_type' in data.columns:
+                data = data[data['key_type'] == filter_by_type]
 
-            return data.loc[mask]
+            data = data.sort_values(by='Date' if 'Date' in data.columns else data.index)
+
+            # Apply date filtering
+            if start_date:
+                data = data[data['Date'] >= pd.to_datetime(start_date)]
+            if end_date:
+                data = data[data['Date'] <= pd.to_datetime(end_date)]
+
+            return data
 
         except Exception as e:
             print(f"Error accessing COT data: {e}")
@@ -261,93 +309,27 @@ class MarketTable:
 
 
 class EIATable(TableClient):
+    """EIA data table client"""
 
     def __init__(self, commodity, rename_key_cols=True):
-        super().__init__(API().get_series,
-                         store_folder,
-                         'eia_data.h5',
-                         key_prefix=commodity,
-                         map_file='C:\\Users\\nicho\PycharmProjects\macrOS-Int\data_sources\eia\data_mapping.toml',
-                         rename_on_load=rename_key_cols)
-        self.commodity = self.prefix = commodity
-        return
+        # Use the loaded mapping
+        map_file = PROJECT_ROOT / 'data' / 'sources' / 'eia' / 'data_mapping.toml'
 
-    def update_db(self, series, alias=None, rename_column=False, start_date=None, end_date=None, commodity=None):
-        params = dict(series_id=series)
-        commodity = self.commodity if commodity is None else commodity
-        if start_date is not None:
-            params.update(dict(start_date=start_date, end_date=end_date))
-
-        try:
-            srs = self.client(**params)
-            if rename_column:
-                if isinstance(srs, pd.DataFrame) or isinstance(srs, pd.Series):
-                    if rename_column:
-                        names = alias.rsplit('/')
-                        if len(names) > 1:
-                            new_name = names[-2] + '_' + names[-1]
-                        else:
-                            new_name = names[-1]
-                        if isinstance(srs,
-                                      pd.DataFrame):
-                            srs.rename({srs.columns[0]: new_name}, inplace=True)
-                        else:
-                            srs.rename(new_name, axis=1, inplace=True)
-
-        except requests.exceptions.HTTPError as e:
-            print(f'failed to get {series} ')
-            return False
-
-        if not alias:
-            if series in self.mapping['aliases'].keys():
-                key_name = f'{commodity}/{self.mapping["aliases"][series]}'
-            else:
-                return srs
-
+        if API is None:
+            print("Warning: EIA API not available. Using mock client.")
+            client = lambda **kwargs: pd.DataFrame()  # Mock client
         else:
-            key_name = f'{commodity}/{alias}'
+            client = API().get_series
 
-            srs.to_hdf(self.table_db, key_name)
-            print(f'Data Successfully Updated to {self.table_db}\n Key:{key_name}')
-
-        return True
-
-    def update_all(self, rename_columns=True):
-        keyvals = walk_dict(self.mapping)
-
-        for k, v in keyvals:
-            self.update_db(v, alias=f'{k[0]}/{k[-1]}', rename_column=rename_columns)
-        return
-
-    def update_from_mapping(self, map_key, sub_keys=False):
-        items = self.mapping[map_key].items() if not sub_keys else walk_dict(self.mapping[map_key])
-        missing_tables = []
-        for k, v in items:
-            update = self.update_db(v, alias=f'{map_key}/{k}')
-            if not update:
-                missing_tables.append(f'{map_key}/{k}')
-
-        return
-
-    def update_futures(self, contracts=(1, 4), product=None):
-        codes = []
-        futs_codes = walk_dict(table_mapping['futs']['aliases'])
-        update_dict = {}
-        for key, code in futs_codes:
-            for i in range(contracts[0], contracts[1] + 1):
-                if 'PET' not in key:
-                    series_id = f'{key[-1]}.{code}{i}.D'
-                    alias = f'futures/contract_{i}'
-                    update_dict.update({key: series_id})
-                    commodity = key[-1]
-                else:
-                    series_id = f'{key[-2]}.{code}{i}.D'
-                    alias = f'{key[-1]}/futures/contract_{i}'
-                    commodity = key[-2]
-
-                self.update_db(series_id, alias, commodity=commodity)
-
-        return
+        super().__init__(
+            client,
+            store_folder,
+            'eia_data.h5',
+            key_prefix=commodity,
+            map_file=str(map_file),
+            rename_on_load=rename_key_cols
+        )
+        self.commodity = self.prefix = commodity
 
 
 nass_info = {
@@ -356,7 +338,7 @@ nass_info = {
 
 # National Agricultural Stats
 class NASSTable(TableClient):
-    with open('C:\\Users\\nicho\PycharmProjects\macrOS-Int\data_sources\\usda\data_mapping.toml') as map_file:
+    with open(Path(PROJECT_ROOT, 'data', 'sources','usda' ,'data_mapping.toml')) as map_file:
         table_map = toml.load(map_file)
 
     def __init__(self, source_desc,
@@ -493,14 +475,14 @@ class FASTable(TableClient):
 
     # Shares the same table as NASSTable for convenience’s sake as they link to the same commodities and agency
     def __init__(self, commodity=None):
-        super().__init__(client=self.psd, data_folder=os.getenv('DATA_PATH'), db_file_name='nass_agri_stats.hd5',
+        super().__init__(client=self.psd, data_folder=DATA_PATH, db_file_name='nass_agri_stats.hd5',
                          key_prefix=commodity, rename_on_load=False)
-        self.esr = USDAESR(os.getenv('FAS_TOKEN'))
+        self.esr = USDAESR(FAS_TOKEN)
         self.prefix = commodity if commodity else None
         self.code = comms_dict[commodity] if commodity else None
         self.country = CountryCode.UNITED_STATES
         self.type = 'livestock' if (self.prefix == 'hog' or self.prefix == 'cattle') else 'grain'
-        with open(Path(self.app_path, 'data_sources', 'usda', "esr_map.toml")) as fp:
+        with open(Path(self.app_path, 'data', 'sources/usda', "esr_map.toml")) as fp:
             data_map = toml.load(fp)
             self.aliases = data_map['aliases']
             self.esr_codes = data_map['esr']
@@ -515,7 +497,6 @@ class FASTable(TableClient):
 
     # noinspection PyTypeChecker
     def update_table_local(self, data_folder, key_type="imports"):
-        from sources.usda.nass_utils import clean_import_df
         aliases = self.aliases
         loading_func = lambda x: clean_fas(x)
         files = os.listdir(data_folder)

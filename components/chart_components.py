@@ -1,3 +1,6 @@
+from typing import Optional, Tuple, Dict
+
+from plotly import graph_objects as go
 
 from data.data_tables import MarketTable
 from dash import dcc, html
@@ -490,95 +493,6 @@ class FundamentalChart:
         return None
 
 
-class COTPlotter:
-    """Professional COT report visualization with industry-standard styling."""
-
-    def __init__(self, df: pd.DataFrame):
-        self.df = df.copy()
-        self.prepare_data()
-
-        self.colors = {
-            'commercials': '#FF6B6B',
-            'non_commercials': '#4ECDC4',
-            'small_speculators': '#45B7D1',
-            'swap_dealers': '#96CEB4',
-            'money_managers': '#FFEAA7',
-            'other_reportables': '#DDA0DD'
-        }
-
-    def prepare_data(self):
-        """Prepare and clean COT data with flexible column mapping."""
-        if 'date' in self.df.columns:
-            self.df['date'] = pd.to_datetime(self.df['date'])
-            self.df = self.df.sort_values('date')
-        elif isinstance(self.df.index, pd.DatetimeIndex):
-            self.df = self.df.sort_index()
-
-        def find_column(patterns):
-            for pattern in patterns:
-                for col in self.df.columns:
-                    if pattern.lower() in col.lower():
-                        return col
-            return None
-
-        # Map common COT column variations and calculate net positions
-        mappings = [
-            (['producer_merchant_processor_user_longs', 'comm_long', 'commercial_long'],
-             ['producer_merchant_processor_user_shorts', 'comm_short', 'commercial_short'],
-             'producer_merchant_net'),
-            (['swap_dealer_longs', 'swap_long'], ['swap_dealer_shorts', 'swap_short'], 'swap_dealer_net'),
-            (['money_manager_longs', 'mm_long', 'asset_mgr_longs'],
-             ['money_manager_shorts', 'mm_short', 'asset_mgr_shorts'], 'money_manager_net'),
-            (['other_reportable_longs', 'other_long'], ['other_reportable_shorts', 'other_short'],
-             'other_reportable_net')
-        ]
-
-        for long_patterns, short_patterns, net_col in mappings:
-            long_col = find_column(long_patterns)
-            short_col = find_column(short_patterns)
-            if long_col and short_col:
-                self.df[net_col] = self.df[long_col] - self.df[short_col]
-
-        # Calculate total non-commercial positions
-        swap_long = find_column(['swap_dealer_longs', 'swap_long'])
-        mm_long = find_column(['money_manager_longs', 'mm_long'])
-        swap_short = find_column(['swap_dealer_shorts', 'swap_short'])
-        mm_short = find_column(['money_manager_shorts', 'mm_short'])
-
-        if swap_long and mm_long:
-            self.df['non_commercial_longs'] = self.df[swap_long] + self.df[mm_long]
-        if swap_short and mm_short:
-            self.df['non_commercial_shorts'] = self.df[swap_short] + self.df[mm_short]
-        if 'non_commercial_longs' in self.df.columns and 'non_commercial_shorts' in self.df.columns:
-            self.df['non_commercial_net'] = self.df['non_commercial_longs'] - self.df['non_commercial_shorts']
-
-    def plot_cot_report(self, show_net_positions: bool = True, title: str = "COT Report",
-                        height: int = 400) -> go.Figure:
-        """Create professional COT report visualization."""
-        x_data = self.df['date'] if 'date' in self.df.columns else self.df.index
-
-        fig = go.Figure()
-
-        if show_net_positions:
-            traces = [
-                ('producer_merchant_net', 'Commercials (Net)', self.colors['commercials']),
-                ('non_commercial_net', 'Non-Commercials (Net)', self.colors['non_commercials'])
-            ]
-
-            for col, name, color in traces:
-                if col in self.df.columns:
-                    fig.add_trace(go.Scatter(x=x_data, y=self.df[col], name=name,
-                                             line=dict(color=color, width=2)))
-
-            fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.3)
-
-        fig.update_layout(
-            title=title, height=height, hovermode='x unified',
-            xaxis_title="Date", yaxis_title="Contracts",
-            margin=dict(l=40, r=40, t=60, b=40)
-        )
-
-        return fig
 
 class MultiChart(FundamentalChart):
     """
@@ -626,8 +540,10 @@ class MultiChart(FundamentalChart):
     def set_selected_columns(self, columns):
         """Set which columns to plot"""
         if self.data is not None:
-            self.y_columns = [col for col in columns if col in available_cols]
-        return self
+            self.y_columns = [col for col in self.data.columns if col in columns]
+            self.config['y_columns'] = self.y_columns
+
+        return self.get_chart_figure()
 
     def set_secondary_y_columns(self, columns):
         """Set which columns should be plotted on secondary y-axis"""
@@ -898,6 +814,7 @@ class MultiChart(FundamentalChart):
         """Update selected columns and return new figure"""
         self.y_columns = selected_columns
         return self.get_chart_figure()
+
     def update_data_source(self, data, y_columns=None):
         self.data = data
         self.y_columns = y_columns if y_columns else self.data.select_dtypes(include=[np.number], exclude=['object', datetime]).columns.tolist()
@@ -929,36 +846,252 @@ class MultiChart(FundamentalChart):
         return None
 
 
+class COTPlotter:
+    """
+    A class for plotting Commitment of Traders (COT) reports using Plotly.
+    Creates interactive charts matching professional COT report visualizations.
+    """
 
-# Example usage
-if __name__ == "__main__":
-    # Test MarketChart
-    sample_market_data = create_sample_market_data()
+    def __init__(self, df: pd.DataFrame):
+        """Initialize the COT plotter with data."""
+        self.df = df.copy()
+        self.prepare_data()
 
-    market_chart = MarketChart(
-        chart_id='test-market-chart',
-        title='Test Market Chart',
-        market_data=sample_market_data,
-        chart_type='line',
-        width='600px',
-        height=400
-    )
+        # Define color scheme
+        self.colors = {
+            'commercials': '#FF6B6B',
+            'non_commercials': '#4ECDC4',
+            'small_speculators': '#45B7D1',
+            'swap_dealers': '#96CEB4',
+            'money_managers': '#FFEAA7',
+            'other_reportables': '#DDA0DD'
+        }
 
-    print("Market Chart created successfully")
-    print(f"Chart has {len(sample_market_data)} data points")
 
-    # Test FundamentalChart (without actual HDF5 file)
-    supply_chart = FundamentalChart(
-        chart_id='test-supply-chart',
-        title='Test Supply/Demand Chart',
-        y_column='Value',
-        chart_type='bar',
-        width='600px',
-        height=400
-    )
+    def prepare_data(self):
+        """Prepare and clean the data for plotting."""
+        self.df['date'] = pd.to_datetime(self.df['date'])
+        self.df = self.df.sort_values('date')
 
-    # Manually set data for testing
-    supply_chart.data = create_sample_supply_demand_data()
+        # Calculate net positions
+        self.df['producer_merchant_net'] = (
+            self.df['producer_merchant_processor_user_longs'] -
+            self.df['producer_merchant_processor_user_shorts']
+        )
 
-    print("Supply/Demand Chart created successfully")
-    print(f"Available columns: {supply_chart.get_available_columns()}")
+        self.df['swap_dealer_net'] = (
+            self.df['swap_dealer_longs'] -
+            self.df['swap_dealer_shorts']
+        )
+
+        self.df['money_manager_net'] = (
+            self.df['money_manager_longs'] -
+            self.df['money_manager_shorts']
+        )
+
+        self.df['other_reportable_net'] = (
+            self.df['other_reportable_longs'] -
+            self.df['other_reportable_shorts']
+        )
+
+        # Calculate total non-commercial positions
+        self.df['non_commercial_longs'] = (
+            self.df['money_manager_longs'] + self.df['swap_dealer_longs']
+        )
+
+        self.df['non_commercial_shorts'] = (
+            self.df['money_manager_shorts'] + self.df['swap_dealer_shorts']
+        )
+
+        self.df['non_commercial_net'] = (
+            self.df['non_commercial_longs'] - self.df['non_commercial_shorts']
+        )
+
+    def plot_cot_report(self,
+                       show_net_positions: bool = True,
+                       show_disaggregated: bool = True,
+                       date_range: Optional[Tuple[str, str]] = None,
+                       title: str = "Commitment of Traders Report",
+                       height: int = 800) -> go.Figure:
+        """Create comprehensive COT report visualization."""
+
+        # Filter data by date range if specified
+        plot_data = self.df.copy()
+        if date_range:
+            start_date, end_date = date_range
+            plot_data = plot_data[
+                (plot_data['date'] >= start_date) &
+                (plot_data['date'] <= end_date)
+            ]
+
+        # Create subplots
+        if show_disaggregated:
+            fig = make_subplots(
+                rows=2, cols=1,
+                subplot_titles=("Traditional COT View", "Disaggregated COT View"),
+                vertical_spacing=0.1,
+                shared_xaxes=True
+            )
+        else:
+            fig = go.Figure()
+
+        # Plot traditional COT view
+        self._add_traditional_cot(fig, plot_data, show_net_positions, row=1 if show_disaggregated else None)
+
+        # Plot disaggregated view if requested
+        if show_disaggregated:
+            self._add_disaggregated_cot(fig, plot_data, show_net_positions, row=2)
+
+        # Update layout
+        fig.update_layout(
+            title=title,
+            height=height,
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis_title="Date",
+            yaxis_title="Contracts"
+        )
+
+        if show_disaggregated:
+            fig.update_yaxes(title_text="Contracts", row=1, col=1)
+            fig.update_yaxes(title_text="Contracts", row=2, col=1)
+
+        return fig
+
+    def _add_traditional_cot(self, fig, data, show_net_positions, row=None):
+        """Add traditional COT traces to figure."""
+        dates = data['date']
+
+        if show_net_positions:
+            traces = [
+                go.Scatter(x=dates, y=data['producer_merchant_net'],
+                          name='Commercials (Net)', line=dict(color=self.colors['commercials'], width=2)),
+                go.Scatter(x=dates, y=data['non_commercial_net'],
+                          name='Non-Commercials (Net)', line=dict(color=self.colors['non_commercials'], width=2)),
+                go.Scatter(x=dates, y=data['non_reportable_longs'] - data['non_reportable_shorts'],
+                          name='Small Speculators (Net)', line=dict(color=self.colors['small_speculators'], width=2))
+            ]
+        else:
+            traces = [
+                go.Scatter(x=dates, y=data['producer_merchant_processor_user_longs'],
+                          name='Commercials (Long)', line=dict(color=self.colors['commercials'], width=2)),
+                go.Scatter(x=dates, y=data['producer_merchant_processor_user_shorts'],
+                          name='Commercials (Short)', line=dict(color=self.colors['commercials'], width=2, dash='dash')),
+                go.Scatter(x=dates, y=data['non_commercial_longs'],
+                          name='Non-Commercials (Long)', line=dict(color=self.colors['non_commercials'], width=2)),
+                go.Scatter(x=dates, y=data['non_commercial_shorts'],
+                          name='Non-Commercials (Short)', line=dict(color=self.colors['non_commercials'], width=2, dash='dash'))
+            ]
+
+        for trace in traces:
+            fig.add_trace(trace, row=row, col=1)
+
+        # Add zero line for net positions
+        if show_net_positions:
+            fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.3, row=row, col=1)
+
+    def _add_disaggregated_cot(self, fig, data, show_net_positions, row):
+        """Add disaggregated COT traces to figure."""
+        dates = data['date']
+
+        if show_net_positions:
+            traces = [
+                go.Scatter(x=dates, y=data['producer_merchant_net'],
+                          name='Producer/Merchant (Net)', line=dict(color=self.colors['commercials'], width=2)),
+                go.Scatter(x=dates, y=data['swap_dealer_net'],
+                          name='Swap Dealers (Net)', line=dict(color=self.colors['swap_dealers'], width=2)),
+                go.Scatter(x=dates, y=data['money_manager_net'],
+                          name='Money Managers (Net)', line=dict(color=self.colors['money_managers'], width=2)),
+                go.Scatter(x=dates, y=data['other_reportable_net'],
+                          name='Other Reportables (Net)', line=dict(color=self.colors['other_reportables'], width=2))
+            ]
+        else:
+            traces = [
+                go.Scatter(x=dates, y=data['producer_merchant_processor_user_longs'],
+                          name='Producer/Merchant (Long)', line=dict(color=self.colors['commercials'], width=2)),
+                go.Scatter(x=dates, y=data['swap_dealer_longs'],
+                          name='Swap Dealers (Long)', line=dict(color=self.colors['swap_dealers'], width=2)),
+                go.Scatter(x=dates, y=data['money_manager_longs'],
+                          name='Money Managers (Long)', line=dict(color=self.colors['money_managers'], width=2)),
+                go.Scatter(x=dates, y=data['other_reportable_longs'],
+                          name='Other Reportables (Long)', line=dict(color=self.colors['other_reportables'], width=2))
+            ]
+
+        for trace in traces:
+            fig.add_trace(trace, row=row, col=1)
+
+        # Add zero line for net positions
+        if show_net_positions:
+            fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.3, row=row, col=1)
+
+    def plot_concentration_analysis(self,
+                                  date_range: Optional[Tuple[str, str]] = None,
+                                  height: int = 600) -> go.Figure:
+        """Plot concentration analysis as stacked area chart."""
+
+        # Filter data by date range if specified
+        plot_data = self.df.copy()
+        if date_range:
+            start_date, end_date = date_range
+            plot_data = plot_data[
+                (plot_data['date'] >= start_date) &
+                (plot_data['date'] <= end_date)
+            ]
+
+        # Calculate percentages
+        total_longs = plot_data['total_reportable_longs'] + plot_data['non_reportable_longs']
+
+        fig = go.Figure()
+
+        # Add stacked area traces
+        categories = [
+            ('Commercials', plot_data['producer_merchant_processor_user_longs'] / total_longs * 100, self.colors['commercials']),
+            ('Swap Dealers', plot_data['swap_dealer_longs'] / total_longs * 100, self.colors['swap_dealers']),
+            ('Money Managers', plot_data['money_manager_longs'] / total_longs * 100, self.colors['money_managers']),
+            ('Other Reportables', plot_data['other_reportable_longs'] / total_longs * 100, self.colors['other_reportables']),
+            ('Non-Reportables', plot_data['non_reportable_longs'] / total_longs * 100, self.colors['small_speculators'])
+        ]
+
+        for name, values, color in categories:
+            fig.add_trace(go.Scatter(
+                x=plot_data['date'],
+                y=values,
+                mode='lines',
+                stackgroup='one',
+                name=name,
+                line=dict(width=0.5, color=color),
+                fill='tonexty'
+            ))
+
+        fig.update_layout(
+            title='COT Position Concentration Analysis',
+            xaxis_title='Date',
+            yaxis_title='Percentage of Total Open Interest (%)',
+            height=height,
+            hovermode='x unified'
+        )
+
+        return fig
+
+    def get_latest_positions(self) -> Dict:
+        """Get the latest position data for all categories."""
+        latest_data = self.df.iloc[-1]
+
+        return {
+            'date': latest_data['date'],
+            'commercials': {
+                'longs': latest_data['producer_merchant_processor_user_longs'],
+                'shorts': latest_data['producer_merchant_processor_user_shorts'],
+                'net': latest_data['producer_merchant_net']
+            },
+            'swap_dealers': {
+                'longs': latest_data['swap_dealer_longs'],
+                'shorts': latest_data['swap_dealer_shorts'],
+                'net': latest_data['swap_dealer_net']
+            },
+            'money_managers': {
+                'longs': latest_data['money_manager_longs'],
+                'shorts': latest_data['money_manager_shorts'],
+                'net': latest_data['money_manager_net']
+            }
+        }

@@ -2,7 +2,7 @@ import dash
 from dash import Input, Output, State
 
 def register_global_callbacks(app):
-    """Register global application callbacks"""
+    """Register simplified global application callbacks"""
 
     @app.callback(
         Output('global-alerts', 'children'),
@@ -15,10 +15,15 @@ def register_global_callbacks(app):
         return ""
 
     @app.callback(
-        Output('user-preferences', 'data'),
-        Input('global-settings', 'data'),
-        State('user-preferences', 'data'),
+        Output('global-settings', 'data'),
+        Input('app-state', 'data'),
+        State('global-settings', 'data'),
         prevent_initial_call=True
     )
-
-    return
+    def sync_global_settings(app_state, current_settings):
+        """Sync application state with global settings"""
+        if app_state and app_state.get('settings'):
+            settings = current_settings or {}
+            settings.update(app_state['settings'])
+            return settings
+        return current_settings

@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 from dash import html, dcc, callback, Output, Input, callback_context, no_update
 from plotly import graph_objects as go, express as px
-from sources.data_tables import EIATable
+from data.data_tables import EIATable
 from model_apps import ModelApp
-from utils import key_to_name, fetch_contract_keys, calc_contract_spreads
+from utils.data_tools import key_to_name, fetch_contract_keys, calc_contract_spreads
 
 
 class StorageApp(ModelApp):

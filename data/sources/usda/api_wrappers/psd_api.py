@@ -15,7 +15,7 @@ from enum import Enum
 import logging
 import json
 from datetime import datetime
-from sources.usda.nass_utils import clean_grains, clean_livestock
+from data.sources.usda.nass_utils import clean_grains, clean_livestock
 
 
 class CommodityCode(Enum):
@@ -80,7 +80,7 @@ REVERSE_GROUP_LOOKUP: Dict[str, CommodityGroup] = {}
 
 for group in CommodityGroup:
     for code_enum in group.value:
-        REVERSE_GROUP_LOOKUP[code_enum.value] = group
+        REVERSE_GROUP_LOOKUP[code_enum.value] = code_enum
 
 class AttributeCode(Enum):
     """Common PSD attribute codes"""
@@ -238,10 +238,11 @@ class PSD_API:
             DataFrame with query results
         """
         # Convert dataclass to dict and remove None values
-        payload = {k: v for k, v in asdict(params).items() if v is not None}
+        payload = {k: v for k, v in asdict(params).items() if v is not None and k is not "group"}
         years = payload['marketYears']
         code = payload['commodities']
-        comm_group = REVERSE_GROUP_LOOKUP[code] if isinstance(code, str) else [REVERSE_GROUP_LOOKUP[c] for c in code]
+        comm_group = REVERSE_GROUP_LOOKUP[code]
+
         if isinstance(comm_group, List) and len(pd.Series(comm_group).unique()) < 2:
             comm_group = comm_group[0]
 
@@ -415,6 +416,7 @@ class PSD_API:
             countries=country_codes,
             marketYears=years
         )
+
 
         return self.run_query(params)
 

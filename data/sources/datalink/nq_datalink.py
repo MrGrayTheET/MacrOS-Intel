@@ -14,7 +14,7 @@ data_path = os.getenv('data_path')
 if not os.path.exists(data_path):
     os.mkdir(data_path)
 
-with open('data_sources/COT/futures_mappings.toml') as f:
+with open('data/COT/futures_mappings.toml') as f:
     contract_map = toml.load(f)
 
 

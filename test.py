@@ -1,4 +1,4 @@
-from data_sources.tables import EIATable
+from sources.data_tables import EIATable
 from dotenv import load_dotenv
 import plotly.io as  pio
 
