@@ -33,7 +33,7 @@ from layouts.agriculture import import_export_layout
 from callbacks.agricultural import import_export_callbacks
 load_dotenv('.env')
 from data.data_tables import FASTable
-from  dash import html
+from  dash import html, Input, Output
 
 # Initialize the Dash app
 data_type = None
@@ -48,7 +48,9 @@ def layout(data_type=None, **kwargs):
     if not data_type:
         return html.Div('Invalid trade type (select imports or exports)')
     else:
-        return import_export_layout(data_type), cbs.register_callbacks()
+
+        return import_export_layout(data_type)
+
 
     
 

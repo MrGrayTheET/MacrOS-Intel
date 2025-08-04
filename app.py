@@ -30,12 +30,9 @@ navbar = dbc.NavbarSimple(
     color="dark",
     dark=True,
     children=[
-        dbc.NavItem(dcc.Link(id='storage-link', href="/energy/ng_storage")),
-        dbc.NavItem(dcc.Link(id='exports-link', href='/trade_bal/exports'))
+        dbc.NavItem(dbc.NavLink(id='psd-data', href="/energy/ng_storage")),
     ]
 )
-from pages.energy import ng_storage
-from pages import trade_bal
 
 
 # Main layout

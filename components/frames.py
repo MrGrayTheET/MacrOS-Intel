@@ -8,7 +8,7 @@ import dash
 from dash import dcc, html, dash_table, Input, Output, State
 from data.data_tables import MarketTable, TableClient, FASTable
 import pandas as pd
-from typing import List, Dict, Any, Union, Optional
+from typing import List, Dict, Any, Union, Optional, Tuple, Callable
 
 
 
@@ -345,355 +345,35 @@ class MarketFrame:
 
 import pandas as pd
 from typing import List, Dict, Any, Optional, Union
-from dash import html, dcc, Input, Output, State, dash, no_update
+from dash import html, dcc, Input, Output, State, dash, no_update, callback
 
 
 class FrameGrid:
-    """Layout manager for FundamentalFrame and MarketFrame instances with configurable menu."""
+    """
+    A layout manager for arranging multiple FundamentalFrame and MarketFrame instances in a grid.
+    Enhanced with configurable menu for data selection and frame targeting.
+    """
 
     def __init__(self,
-                 frames: List[Union['FundamentalFrame', 'MarketFrame']], config: Optional[Dict[str, Any]] = None,
+                 frames: List[Union[FundamentalFrame, MarketFrame]],
+                 grid_config: Optional[Dict[str, Any]] = None,
                  style_config: Optional[Dict[str, Any]] = None,
-                 menu_config: Optional[Dict[str, Any]] = None, container_id: str = "frame-grid-container"):
+                 menu_config: Optional[Dict[str, Any]] = None,
+                 container_id: str = "frame-grid-container"):
+        """
+        Initialize the FrameGrid with optional menu.
 
+        Args:
+            frames: List of frame instances to arrange
+            grid_config: Grid layout configuration
+            style_config: Styling configuration
+            menu_config: Menu configuration for data selection
+            container_id: Unique ID for the container
+        """
         self.frames = frames
         self.container_id = container_id
 
-        # Default configurations
-        default_grid_config = {
-            'layout_type': 'auto',
-            'rows': None,
-            'cols': None,
-            'gap': '20px',
-            'responsive': True,
-            'breakpoints': {
-                'sm': {'cols': 1},
-                'md': {'cols': 2},
-                'lg': {'cols': 3},
-                'xl': {'cols': 4}
-            },
-            'frame_positions': {}
-
-        }
-
-        default_style_config = {
-            'container_width': '100%',
-            'container_height': 'auto',
-            'padding': '20px',
-            'background_color': '#0f0f0f',
-            'frame_background': '#1a1a2e',
-            'border_color': '#333',
-            'border_radius': '10px',
-            'box_shadow': '0 4px 6px rgba(0, 0, 0, 0.3)',
-            'title_color': '#fff',
-            'frame_min_height': '400px',
-            'responsive_padding': {
-                'sm': '10px',
-                'md': '15px',
-                'lg': '20px'
-            }
-
-        }
-
-        default_menu_config = {
-            'enabled': True,
-            'position': 'top',
-            'size': {'width': '100%', 'height': '160px'},
-            'alterable_frames': None,
-            'data_sources': None,
-            'categories': ['storage', 'prices', 'production'],
-            'show_frame_selector': True,
-            'show_apply_button': True,
-            'menu_title': 'Data Control Panel',
-            'compact_mode': False,
-            'background_color': '#1a1a2e',
-            'text_color': '#fff',
-            'filter_criteria': None,
-            'selection_mode': 'keys',
-            'show_column_selector': True
-        }
-
-        self.grid_config = {**default_grid_config, **(grid_config or {})}
-        self.style_config = {**default_style_config, **(style_config or {})}
-        self.menu_config = {**default_menu_config, **(menu_config or {})}
-
-        self._initialize_menu_data()
-
-        if self.grid_config['layout_type'] == 'auto':
-            self._calculate_auto_grid()
-
-        return
-
-    def get_menu_component_ids(self) -> Dict[str, str]:
-        """Get all menu-related component IDs for callback registration."""
-        menu_ids = {}
-
-        if not self.menu_config['enabled']:
-            return menu_ids
-
-        menu_ids['apply_button'] = f"{self.container_id}_menu_apply_button"
-
-        if self.menu_config['show_frame_selector']:
-            menu_ids['frame_selector'] = f"{self.container_id}_menu_frame_selector"
-
-        first_frame_idx = self.menu_config['alterable_frames'][0]
-        frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
-
-        for category in frame_data_sources.keys():
-            menu_ids[f'{category}_dropdown'] = f"{self.container_id}_menu_{category}_dropdown"
-            if (self.menu_config['show_column_selector'] and
-                    self.menu_config['selection_mode'] in ['columns', 'both']):
-                menu_ids[f'{category}_column_dropdown'] = f"{self.container_id}_menu_{category}_column_dropdown"
-
-        if len(frame_data_sources) > 1:
-            menu_ids['data_tabs'] = f"{self.container_id}_menu_data_tabs"
-
-        return menu_ids
-
-    def register_menu_callbacks(self, app):
-        """Register callbacks for menu interactions with keys/columns support."""
-        if not self.menu_config['enabled']:
-            return
-
-        menu_ids = self.get_menu_component_ids()
-        alterable_frames = self.menu_config['alterable_frames']
-
-        if not menu_ids.get('apply_button'):
-            return
-
-        if (self.menu_config['show_column_selector'] and
-                self.menu_config['selection_mode'] in ['columns', 'both']):
-            self._register_column_update_callbacks(app, menu_ids)
-
-        callback_inputs = [Input(menu_ids['apply_button'], 'n_clicks')]
-        callback_states = []
-
-        if 'frame_selector' in menu_ids:
-            callback_states.append(State(menu_ids['frame_selector'], 'value'))
-
-        first_frame_idx = alterable_frames[0]
-        frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
-
-        for category in frame_data_sources.keys():
-            dropdown_id = menu_ids[f'{category}_dropdown']
-            callback_states.append(State(dropdown_id, 'value'))
-
-            if f'{category}_column_dropdown' in menu_ids:
-                callback_states.append(State(menu_ids[f'{category}_column_dropdown'], 'value'))
-
-        if 'data_tabs' in menu_ids:
-            callback_states.append(State(menu_ids['data_tabs'], 'value'))
-
-        callback_outputs = []
-        for frame_idx in alterable_frames:
-            if (frame_idx < len(self.frames) and
-                    hasattr(self.frames[frame_idx], 'charts') and
-                    self.frames[frame_idx].charts):
-                first_chart = self.frames[frame_idx].charts[0]
-                callback_outputs.append(Output(first_chart.chart_id, 'figure'))
-
-        if not callback_outputs:
-            return
-
-        @app.callback(
-            callback_outputs,
-            callback_inputs,
-            callback_states,
-            prevent_initial_call=True
-        )
-        def update_frames_from_menu(n_clicks, *state_values):
-            if n_clicks is None or n_clicks == 0:
-                return [no_update] * len(callback_outputs)
-
-            state_idx = 0
-
-            if 'frame_selector' in menu_ids:
-                selected_frame_idx = state_values[state_idx] if state_values[state_idx] is not None else \
-                alterable_frames[0]
-                state_idx += 1
-            else:
-                selected_frame_idx = alterable_frames[0]
-
-            selection_data = {}
-            for category in frame_data_sources.keys():
-                selection_data[category] = {
-                    'main_value': state_values[state_idx],
-                    'column_value': None
-                }
-                state_idx += 1
-
-                if f'{category}_column_dropdown' in menu_ids:
-                    selection_data[category]['column_value'] = state_values[state_idx]
-                    state_idx += 1
-
-            if 'data_tabs' in menu_ids:
-                active_tab = state_values[state_idx]
-            else:
-                active_tab = list(frame_data_sources.keys())[0].lower()
-
-            if selected_frame_idx in alterable_frames and active_tab in selection_data:
-                return self._update_frame_with_selection(
-                    selected_frame_idx, active_tab, selection_data[active_tab], alterable_frames
-                )
-
-            return [no_update] * len(callback_outputs)
-
-    def _register_column_update_callbacks(self, app, menu_ids):
-        """Register callbacks to update column dropdowns based on main selection."""
-        first_frame_idx = self.menu_config['alterable_frames'][0]
-        frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
-
-        for category in frame_data_sources.keys():
-            if f'{category}_column_dropdown' in menu_ids:
-                @app.callback(
-                    Output(menu_ids[f'{category}_column_dropdown'], 'options'),
-                    [Input(menu_ids[f'{category}_dropdown'], 'value')],
-                    prevent_initial_call=True
-                )
-                def update_column_options(selected_value, category=category):
-                    if not selected_value:
-                        return []
-
-                    options_data = frame_data_sources[category]
-                    selected_option = None
-
-                    for display_name, option_data in options_data.items():
-                        if isinstance(option_data, dict):
-                            if option_data.get('value') == selected_value:
-                                selected_option = option_data
-                                break
-                        elif option_data == selected_value:
-                            selected_option = {'type': 'key', 'value': selected_value}
-                            break
-
-                    if selected_option and selected_option.get('type') == 'key':
-                        columns = selected_option.get('columns', [])
-                        return [{'label': col, 'value': col} for col in columns]
-
-                    return []
-
-    def _update_frame_with_selection(self, frame_idx, active_category, selection_data, alterable_frames):
-        """Update frame with selected data (key or column)."""
-        selected_value = selection_data['main_value']
-        selected_column = selection_data['column_value']
-
-        if not selected_value or frame_idx >= len(self.frames):
-            return [no_update] * len(alterable_frames)
-
-        target_frame = self.frames[frame_idx]
-        frame_data_sources = self.menu_config['data_sources'].get(frame_idx, {})
-        category_options = frame_data_sources.get(active_category, {})
-
-        selected_option_data = None
-        for display_name, option_data in category_options.items():
-            if isinstance(option_data, dict):
-                if option_data.get('value') == selected_value:
-                    selected_option_data = option_data
-                    break
-            elif option_data == selected_value:
-                selected_option_data = {'type': 'key', 'value': selected_value}
-                break
-
-        if not selected_option_data:
-            return [no_update] * len(alterable_frames)
-
-        selection_type = selected_option_data.get('type', 'key')
-
-        if selection_type == 'key':
-            if hasattr(target_frame, 'table_client'):
-                new_data = target_frame.table_client[selected_value]
-
-                if hasattr(target_frame, 'charts') and target_frame.charts:
-                    target_chart = target_frame.charts[0]
-                    if hasattr(target_chart, 'update_data_source'):
-                        target_chart.update_data_source(new_data, selected_column)
-
-                        outputs = []
-                        for alt_frame_idx in alterable_frames:
-                            if alt_frame_idx == frame_idx:
-                                outputs.append(target_chart.get_chart_figure())
-                            else:
-                                outputs.append(no_update)
-                        return outputs
-
-        elif selection_type == 'column':
-            chart_index = selected_option_data.get('chart_index', 0)
-            if (hasattr(target_frame, 'charts') and
-                    chart_index < len(target_frame.charts)):
-                target_chart = target_frame.charts[chart_index]
-
-                if hasattr(target_chart, 'change_y_column'):
-                    target_chart.change_y_column(selected_value)
-
-                    outputs = []
-                    for alt_frame_idx in alterable_frames:
-                        if alt_frame_idx == frame_idx:
-                            outputs.append(target_chart.get_chart_figure())
-                        else:
-                            outputs.append(no_update)
-                    return outputs
-
-        return [no_update] * len(alterable_frames)
-
-    def register_all_callbacks(self, app):
-        """Register callbacks for all frames in the grid plus menu callbacks."""
-        for frame in self.frames:
-            if hasattr(frame, 'register_callbacks'):
-                frame.register_callbacks(app)
-
-        self.register_menu_callbacks(app)
-
-    def get_all_component_ids(self) -> Dict[str, Any]:
-        """Get all component IDs from all frames for callback management."""
-        all_ids = {
-            'container': self.container_id,
-            'frames': {},
-            'menu': self.get_menu_component_ids()
-        }
-
-        for i, frame in enumerate(self.frames):
-            frame_key = f'frame_{i}'
-            if hasattr(frame, 'get_component_ids'):
-                all_ids['frames'][frame_key] = frame.get_component_ids()
-            else:
-                all_ids['frames'][frame_key] = {'frame_id': f'{self.container_id}-frame-{i}'}
-
-        return all_ids
-
-    def update_frame(self, frame_index: int, new_frame):
-        """Update a specific frame in the grid."""
-        if 0 <= frame_index < len(self.frames):
-            self.frames[frame_index] = new_frame
-            self._initialize_menu_data()
-        else:
-            raise IndexError(f"Frame index {frame_index} out of range")
-
-    def add_frame(self, frame, position: Optional[int] = None):
-        """Add a new frame to the grid."""
-        if position is None:
-            self.frames.append(frame)
-        else:
-            self.frames.insert(position, frame)
-
-        if self.grid_config['layout_type'] == 'auto':
-            self._calculate_auto_grid()
-        self._initialize_menu_data()
-
-    def remove_frame(self, frame_index: int):
-        """Remove a frame from the grid."""
-        if 0 <= frame_index < len(self.frames):
-            self.frames.pop(frame_index)
-
-            if self.grid_config['layout_type'] == 'auto':
-                self._calculate_auto_grid()
-            self._initialize_menu_data()
-        else:
-            raise IndexError(f"Frame index {frame_index} out of range")
-
-        self.frames = frames
-        self.container_id = container_id
-
-        # Default configurations
+        # Default configurations (existing code unchanged)
         default_grid_config = {
             'layout_type': 'auto',
             'rows': None,
@@ -727,30 +407,31 @@ class FrameGrid:
             }
         }
 
+        # Menu configuration with defaults
         default_menu_config = {
             'enabled': True,
-            'position': 'top',
+            'position': 'top',  # 'top', 'left', 'right', 'bottom', 'overlay'
             'size': {'width': '100%', 'height': '160px'},
-            'alterable_frames': None,
-            'data_sources': None,
+            'alterable_frames': None,  # None = all frames, or list of indices
+            'data_sources': None,  # Auto-detect from frames' table_clients
             'categories': ['storage', 'prices', 'production'],
             'show_frame_selector': True,
             'show_apply_button': True,
             'menu_title': 'Data Control Panel',
-            'compact_mode': False,
+            'compact_mode': False,  # Reduces menu size for space-constrained layouts
             'background_color': '#1a1a2e',
             'text_color': '#fff',
-            'filter_criteria': None,
-            'selection_mode': 'keys',
-            'show_column_selector': True
+            'filter_criteria': None  # Dict with filtering rules
         }
 
         self.grid_config = {**default_grid_config, **(grid_config or {})}
         self.style_config = {**default_style_config, **(style_config or {})}
         self.menu_config = {**default_menu_config, **(menu_config or {})}
 
+        # Initialize menu data
         self._initialize_menu_data()
 
+        # Calculate grid dimensions if auto
         if self.grid_config['layout_type'] == 'auto':
             self._calculate_auto_grid()
 
@@ -759,83 +440,59 @@ class FrameGrid:
         if not self.menu_config['enabled']:
             return
 
+        # Auto-detect alterable frames
         if self.menu_config['alterable_frames'] is None:
             self.menu_config['alterable_frames'] = list(range(len(self.frames)))
 
+        # Auto-detect data sources from table clients
         if self.menu_config['data_sources'] is None:
             self.menu_config['data_sources'] = {}
 
             for i, frame in enumerate(self.frames):
                 if hasattr(frame, 'table_client') and hasattr(frame.table_client, 'available_keys'):
+                    keys = frame.table_client.available_keys()
                     frame_data = {}
 
-                    if self.menu_config['selection_mode'] in ['keys', 'both']:
-                        keys = frame.table_client.available_keys()
+                    for category in self.menu_config['categories']:
+                        category_keys = [k for k in keys if k.startswith(f'/{category}/')]
 
-                        for category in self.menu_config['categories']:
-                            category_keys = [k for k in keys if k.startswith(f'/{category}/')]
+                        # Apply filter criteria if specified
+                        if self.menu_config.get('filter_criteria'):
+                            category_keys = self._filter_keys_by_criteria(category_keys, frame, category)
 
-                            if self.menu_config.get('filter_criteria'):
-                                category_keys = self._filter_keys_by_criteria(category_keys, frame, category)
-
-                            if category_keys:
-                                frame_data[category] = {}
-                                for key in category_keys:
-                                    display_name = key.split('/')[-1].replace('_', ' ').title()
-                                    frame_data[category][display_name] = {
-                                        'type': 'key',
-                                        'value': key[1:],
-                                        'columns': self._get_columns_for_key(key[1:], frame)
-                                    }
-
-                    if self.menu_config['selection_mode'] in ['columns', 'both']:
-                        self._add_column_based_sources(frame_data, frame, i)
+                        if category_keys:
+                            frame_data[category] = {}
+                            for key in category_keys:
+                                display_name = key.split('/')[-1].replace('_', ' ').title()
+                                frame_data[category][display_name] = key[1:]  # Remove leading /
 
                     if frame_data:
                         self.menu_config['data_sources'][i] = frame_data
 
-    def _get_columns_for_key(self, key: str, frame) -> List[str]:
-        """Get available columns for a specific key."""
-        try:
-            data = frame.table_client[key]
-            return list(data.columns) if hasattr(data, 'columns') else []
-        except:
-            return []
-
-    def _add_column_based_sources(self, frame_data: Dict, frame, frame_idx: int):
-        """Add column-based data sources to frame_data."""
-        if hasattr(frame, 'charts') and frame.charts:
-            for chart_idx, chart in enumerate(frame.charts):
-                if hasattr(chart, 'data') and chart.data is not None:
-                    data = chart.data
-                    if hasattr(data, 'columns'):
-                        category_name = f'chart_{chart_idx}_columns'
-                        if category_name not in frame_data:
-                            frame_data[category_name] = {}
-
-                        for col in data.columns:
-                            if pd.api.types.is_numeric_dtype(data[col]):
-                                display_name = col.replace('_', ' ').title()
-                                frame_data[category_name][display_name] = {
-                                    'type': 'column',
-                                    'value': col,
-                                    'chart_index': chart_idx,
-                                    'data_shape': data.shape
-                                }
-
     def _filter_keys_by_criteria(self, keys: List[str], frame, category: str) -> List[str]:
-        """Filter keys based on boolean criteria."""
+        """
+        Filter keys based on boolean criteria.
+
+        Args:
+            keys: List of available keys
+            frame: The frame instance
+            category: Current category being processed
+
+        Returns:
+            Filtered list of keys
+        """
         filter_criteria = self.menu_config['filter_criteria']
+
         if not filter_criteria:
             return keys
 
         filtered_keys = []
 
         for key in keys:
-            key_name = key.split('/')[-1]
+            key_name = key.split('/')[-1]  # Get the actual key name
             should_include = True
 
-            # Check global criteria
+            # Check global criteria (applies to all categories)
             if 'global' in filter_criteria:
                 should_include = self._evaluate_criteria(key_name, filter_criteria['global'])
 
@@ -848,7 +505,7 @@ class FrameGrid:
             if should_include and f'frame_{frame_idx}' in filter_criteria:
                 should_include = self._evaluate_criteria(key_name, filter_criteria[f'frame_{frame_idx}'])
 
-            # Check data-based criteria
+            # Check data-based criteria (requires loading data)
             if should_include and 'data_checks' in filter_criteria:
                 should_include = self._evaluate_data_criteria(key, frame, filter_criteria['data_checks'])
 
@@ -858,7 +515,16 @@ class FrameGrid:
         return filtered_keys
 
     def _evaluate_criteria(self, key_name: str, criteria: Dict[str, Any]) -> bool:
-        """Evaluate string-based criteria for a key name."""
+        """
+        Evaluate string-based criteria for a key name.
+
+        Args:
+            key_name: The key name to evaluate
+            criteria: Dictionary of criteria to check
+
+        Returns:
+            True if key meets criteria, False otherwise
+        """
         # String pattern matching
         if 'startswith' in criteria:
             patterns = criteria['startswith'] if isinstance(criteria['startswith'], list) else [criteria['startswith']]
@@ -883,12 +549,14 @@ class FrameGrid:
 
         if 'regex' in criteria:
             import re
-            if not re.search(criteria['regex'], key_name):
+            pattern = criteria['regex']
+            if not re.search(pattern, key_name):
                 return False
 
         # Length criteria
         if 'min_length' in criteria and len(key_name) < criteria['min_length']:
             return False
+
         if 'max_length' in criteria and len(key_name) > criteria['max_length']:
             return False
 
@@ -898,6 +566,7 @@ class FrameGrid:
                 criteria['include_only']]
             if key_name not in include_list:
                 return False
+
         if 'exclude' in criteria:
             exclude_list = criteria['exclude'] if isinstance(criteria['exclude'], list) else [criteria['exclude']]
             if key_name in exclude_list:
@@ -906,9 +575,20 @@ class FrameGrid:
         return True
 
     def _evaluate_data_criteria(self, key: str, frame, criteria: Dict[str, Any]) -> bool:
-        """Evaluate data-based criteria by loading and checking the actual data."""
+        """
+        Evaluate data-based criteria by loading and checking the actual data.
+
+        Args:
+            key: The data key
+            frame: The frame instance
+            criteria: Data criteria to check
+
+        Returns:
+            True if data meets criteria, False otherwise
+        """
         try:
-            data = frame.table_client[key[1:]]
+            # Load the data
+            data = frame.table_client[key[1:]]  # Remove leading /
 
             if data is None or (hasattr(data, 'empty') and data.empty):
                 return criteria.get('allow_empty', True)
@@ -938,19 +618,22 @@ class FrameGrid:
                 if not all(col in data.columns for col in required_cols):
                     return False
 
-            # Check data freshness
+            # Check data freshness (most recent date)
             if 'max_data_age_days' in criteria:
-                from datetime import datetime
+                from datetime import datetime, timedelta
                 max_age = criteria['max_data_age_days']
 
+                # Try to find date column or datetime index
+                date_col = None
                 if hasattr(data, 'index') and pd.api.types.is_datetime64_any_dtype(data.index):
                     latest_date = data.index.max()
                 elif hasattr(data, 'columns'):
                     date_cols = [col for col in data.columns if 'date' in col.lower() or 'time' in col.lower()]
                     if date_cols:
-                        latest_date = pd.to_datetime(data[date_cols[0]]).max()
+                        date_col = date_cols[0]
+                        latest_date = pd.to_datetime(data[date_col]).max()
                     else:
-                        return True
+                        return True  # No date column found, assume it's okay
                 else:
                     return True
 
@@ -969,32 +652,9 @@ class FrameGrid:
 
             return True
 
-        except Exception:
+        except Exception as e:
+            # If we can't load or evaluate the data, decide based on 'allow_errors' setting
             return criteria.get('allow_errors', True)
-
-    def _calculate_auto_grid(self):
-        """Calculate optimal grid dimensions based on number of frames."""
-        num_frames = len(self.frames)
-
-        if num_frames <= 1:
-            self.grid_config['rows'] = 1
-            self.grid_config['cols'] = 1
-        elif num_frames <= 2:
-            self.grid_config['rows'] = 1
-            self.grid_config['cols'] = 2
-        elif num_frames <= 4:
-            self.grid_config['rows'] = 2
-            self.grid_config['cols'] = 2
-        elif num_frames <= 6:
-            self.grid_config['rows'] = 2
-            self.grid_config['cols'] = 3
-        elif num_frames <= 9:
-            self.grid_config['rows'] = 3
-            self.grid_config['cols'] = 3
-        else:
-            import math
-            self.grid_config['cols'] = 4
-            self.grid_config['rows'] = math.ceil(num_frames / 4)
 
     def generate_data_menu(self) -> html.Div:
         """Generate the data selection menu div."""
@@ -1020,7 +680,7 @@ class FrameGrid:
                 )
             )
 
-        # Frame selector
+        # Frame selector (if multiple alterable frames)
         if self.menu_config['show_frame_selector'] and len(alterable_frames) > 1:
             frame_options = []
             for frame_idx in alterable_frames:
@@ -1028,33 +688,43 @@ class FrameGrid:
                     frame_title = getattr(self.frames[frame_idx], 'title', f'Frame {frame_idx + 1}')
                     frame_options.append({'label': f'{frame_title}', 'value': frame_idx})
 
-            selector_content = [
-                html.Label("Target Frame:",
-                           style={'fontWeight': 'bold', 'marginRight': '10px',
-                                  'color': self.menu_config['text_color']}),
-                dcc.Dropdown(
-                    id=f"{self.container_id}_menu_frame_selector",
-                    options=frame_options,
-                    value=alterable_frames[0],
-                    style={'width': '200px' if compact else '100%', 'display': 'inline-block' if compact else 'block'}
-                )
-            ]
-
             if compact:
+                # Horizontal layout for compact mode
                 menu_content.append(
-                    html.Div(selector_content,
-                             style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '10px'})
+                    html.Div([
+                        html.Label("Target Frame:",
+                                   style={'fontWeight': 'bold', 'marginRight': '10px',
+                                          'color': self.menu_config['text_color']}),
+                        dcc.Dropdown(
+                            id=f"{self.container_id}_menu_frame_selector",
+                            options=frame_options,
+                            value=alterable_frames[0],
+                            style={'width': '200px', 'display': 'inline-block'}
+                        )
+                    ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '10px'})
                 )
             else:
                 menu_content.append(
-                    html.Div(selector_content, style={'marginBottom': '15px'})
+                    html.Div([
+                        html.Label("Select Frame to Modify:",
+                                   style={'fontWeight': 'bold', 'marginBottom': '5px',
+                                          'color': self.menu_config['text_color']}),
+                        dcc.Dropdown(
+                            id=f"{self.container_id}_menu_frame_selector",
+                            options=frame_options,
+                            value=alterable_frames[0],
+                            style={'marginBottom': '15px'}
+                        )
+                    ])
                 )
 
         # Data category selection
         if self.menu_config['data_sources']:
             if compact:
+                # Horizontal tabs for compact mode
                 category_content = self._generate_compact_data_selection()
             else:
+                # Full tabs interface
                 category_content = self._generate_full_data_selection()
 
             menu_content.append(category_content)
@@ -1074,17 +744,26 @@ class FrameGrid:
 
             if compact:
                 button_style.update({'marginLeft': '10px'})
+                menu_content.append(
+                    html.Button(
+                        "Apply",
+                        id=f"{self.container_id}_menu_apply_button",
+                        n_clicks=0,
+                        style=button_style
+                    )
+                )
             else:
                 button_style.update({'width': '100%'})
-
-            menu_content.append(
-                html.Button(
-                    "Apply" if compact else "Apply Selection",
-                    id=f"{self.container_id}_menu_apply_button",
-                    n_clicks=0,
-                    style=button_style
+                menu_content.append(
+                    html.Div([
+                        html.Button(
+                            "Apply Selection",
+                            id=f"{self.container_id}_menu_apply_button",
+                            n_clicks=0,
+                            style=button_style
+                        )
+                    ], style={'marginTop': '15px'})
                 )
-            )
 
         # Menu container styling
         menu_style = {
@@ -1113,6 +792,7 @@ class FrameGrid:
 
     def _generate_compact_data_selection(self) -> html.Div:
         """Generate compact horizontal data selection interface."""
+        # Get first alterable frame's data sources as reference
         first_frame_idx = self.menu_config['alterable_frames'][0]
         frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
 
@@ -1122,18 +802,10 @@ class FrameGrid:
         selection_elements = []
 
         for category, options in frame_data_sources.items():
-            dropdown_options = []
-            for display_name, option_data in options.items():
-                if isinstance(option_data, dict):
-                    option_type = option_data.get('type', 'key')
-                    value = option_data.get('value', '')
-                    label = f"{display_name} ({option_type})" if self.menu_config[
-                                                                     'selection_mode'] == 'both' else display_name
-                else:
-                    value = option_data
-                    label = display_name
-
-                dropdown_options.append({'label': label, 'value': value})
+            dropdown_options = [
+                {'label': display_name, 'value': hdf_key}
+                for display_name, hdf_key in options.items()
+            ]
 
             selection_elements.extend([
                 html.Label(f"{category.title()}:",
@@ -1141,25 +813,10 @@ class FrameGrid:
                 dcc.Dropdown(
                     id=f"{self.container_id}_menu_{category}_dropdown",
                     options=dropdown_options,
-                    value=dropdown_options[0]['value'] if dropdown_options else None,
-                    style={'width': '200px', 'marginRight': '15px'}
+                    value=list(options.values())[0] if options else None,
+                    style={'width': '180px', 'marginRight': '15px'}
                 )
             ])
-
-            if (self.menu_config['show_column_selector'] and
-                    self.menu_config['selection_mode'] in ['columns', 'both']):
-                selection_elements.extend([
-                    html.Label("Column:",
-                               style={'fontWeight': 'bold', 'marginRight': '5px',
-                                      'color': self.menu_config['text_color']}),
-                    dcc.Dropdown(
-                        id=f"{self.container_id}_menu_{category}_column_dropdown",
-                        options=[],
-                        value=None,
-                        placeholder="Auto",
-                        style={'width': '150px', 'marginRight': '15px'}
-                    )
-                ])
 
         return html.Div(
             selection_elements,
@@ -1168,6 +825,7 @@ class FrameGrid:
 
     def _generate_full_data_selection(self) -> html.Div:
         """Generate full tabbed data selection interface."""
+        # Get first alterable frame's data sources as reference
         first_frame_idx = self.menu_config['alterable_frames'][0]
         frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
 
@@ -1175,12 +833,29 @@ class FrameGrid:
             return html.Div()
 
         if len(frame_data_sources) > 1:
+            # Multiple categories - use tabs
             tab_children = []
             for category, options in frame_data_sources.items():
-                tab_content = self._create_category_tab_content(category, options)
+                dropdown_options = [
+                    {'label': display_name, 'value': hdf_key}
+                    for display_name, hdf_key in options.items()
+                ]
+
+                tab_content = html.Div([
+                    html.Label(f"Select {category.title()}:",
+                               style={'fontWeight': 'bold', 'marginBottom': '5px',
+                                      'color': self.menu_config['text_color']}),
+                    dcc.Dropdown(
+                        id=f"{self.container_id}_menu_{category}_dropdown",
+                        options=dropdown_options,
+                        value=list(options.values())[0] if options else None,
+                        style={'marginBottom': '10px'}
+                    )
+                ])
+
                 tab_children.append(
                     dcc.Tab(
-                        label=category.replace('_', ' ').title(),
+                        label=category.title(),
                         value=category.lower(),
                         children=tab_content,
                         style={'padding': '15px', 'backgroundColor': self.menu_config['background_color']}
@@ -1194,55 +869,54 @@ class FrameGrid:
                 style={'marginBottom': '15px'}
             )
         else:
+            # Single category - simple dropdown
             category = list(frame_data_sources.keys())[0]
             options = frame_data_sources[category]
-            return self._create_category_tab_content(category, options)
+            dropdown_options = [
+                {'label': display_name, 'value': hdf_key}
+                for display_name, hdf_key in options.items()
+            ]
 
-    def _create_category_tab_content(self, category: str, options: Dict) -> html.Div:
-        """Create tab content for a data category."""
-        dropdown_options = []
-        for display_name, option_data in options.items():
-            if isinstance(option_data, dict):
-                option_type = option_data.get('type', 'key')
-                value = option_data.get('value', '')
-                label = f"{display_name} ({option_type})" if self.menu_config[
-                                                                 'selection_mode'] == 'both' else display_name
-            else:
-                value = option_data
-                label = display_name
-
-            dropdown_options.append({'label': label, 'value': value})
-
-        content_elements = [
-            html.Label(f"Select {category.replace('_', ' ').title()}:",
-                       style={'fontWeight': 'bold', 'marginBottom': '5px', 'color': self.menu_config['text_color']}),
-            dcc.Dropdown(
-                id=f"{self.container_id}_menu_{category}_dropdown",
-                options=dropdown_options,
-                value=dropdown_options[0]['value'] if dropdown_options else None,
-                style={'marginBottom': '10px'}
-            )
-        ]
-
-        if (self.menu_config['show_column_selector'] and
-                self.menu_config['selection_mode'] in ['columns', 'both']):
-            content_elements.extend([
-                html.Label("Select Column (optional):",
+            return html.Div([
+                html.Label(f"Select {category.title()}:",
                            style={'fontWeight': 'bold', 'marginBottom': '5px',
                                   'color': self.menu_config['text_color']}),
                 dcc.Dropdown(
-                    id=f"{self.container_id}_menu_{category}_column_dropdown",
-                    options=[],
-                    value=None,
-                    placeholder="Auto-detect or use default",
-                    style={'marginBottom': '10px'}
+                    id=f"{self.container_id}_menu_{category}_dropdown",
+                    options=dropdown_options,
+                    value=list(options.values())[0] if options else None,
+                    style={'marginBottom': '15px'}
                 )
             ])
 
-        return html.Div(content_elements)
+    def _calculate_auto_grid(self):
+        """Calculate optimal grid dimensions based on number of frames."""
+        # Existing implementation unchanged
+        num_frames = len(self.frames)
+
+        if num_frames <= 1:
+            self.grid_config['rows'] = 1
+            self.grid_config['cols'] = 1
+        elif num_frames <= 2:
+            self.grid_config['rows'] = 1
+            self.grid_config['cols'] = 2
+        elif num_frames <= 4:
+            self.grid_config['rows'] = 2
+            self.grid_config['cols'] = 2
+        elif num_frames <= 6:
+            self.grid_config['rows'] = 2
+            self.grid_config['cols'] = 3
+        elif num_frames <= 9:
+            self.grid_config['rows'] = 3
+            self.grid_config['cols'] = 3
+        else:
+            import math
+            self.grid_config['cols'] = 4
+            self.grid_config['rows'] = math.ceil(num_frames / 4)
 
     def _generate_grid_css(self) -> str:
         """Generate CSS for the grid layout including menu positioning."""
+        # Existing CSS generation plus menu positioning
         gap = self.grid_config['gap']
         menu_enabled = self.menu_config['enabled']
         menu_position = self.menu_config['position']
@@ -1314,7 +988,7 @@ class FrameGrid:
                 .frame-grid-container {{ width: calc(100% - {menu_size.get('width', '300px')} - 20px); }}
                 """
 
-        # Add responsive breakpoints
+        # Add responsive breakpoints (existing code)
         if self.grid_config['responsive']:
             breakpoints = self.grid_config['breakpoints']
 
@@ -1355,6 +1029,7 @@ class FrameGrid:
                 }}
                 """
         else:
+            # Static grid
             rows = self.grid_config['rows'] or 'auto'
             cols = self.grid_config['cols'] or 'auto'
             base_css += f"""
@@ -1366,8 +1041,9 @@ class FrameGrid:
 
         return base_css
 
-    def _create_frame_item(self, frame, index: int) -> html.Div:
-        """Create a grid item containing a frame."""
+    def _create_frame_item(self, frame: Union[FundamentalFrame, MarketFrame], index: int) -> html.Div:
+        """Create a grid item containing a frame (existing implementation)."""
+        # Existing implementation unchanged
         frame_layout = frame.generate_layout_div()
 
         item_style = {}
@@ -1398,6 +1074,8 @@ class FrameGrid:
         frame_items = [self._create_frame_item(frame, i) for i, frame in enumerate(self.frames)]
 
         layout_children = []
+
+        # Add title if requested
         if include_title:
             title_div = html.Div([
                 html.H1(title, style={
@@ -1408,13 +1086,373 @@ class FrameGrid:
                     'fontWeight': '300'
                 })
             ], style={'padding': '20px 0'})
+            layout_children.append(title_div)
 
-        layout_div = html.Div(children=[title_div],style=grid_css)
-
-
+        # Create main content wrapper
         wrapper_children = []
 
+        # Add menu if enabled
         if self.menu_config['enabled']:
             menu_div = self.generate_data_menu()
             wrapper_children.append(menu_div)
 
+        # Add grid container
+        grid_container = html.Div(
+            frame_items,
+            className='frame-grid-container',
+            id=self.container_id
+        )
+        wrapper_children.append(grid_container)
+
+        # Create wrapper with appropriate layout
+        wrapper = html.Div(
+            wrapper_children,
+            className='frame-grid-wrapper'
+        )
+        layout_children.append(wrapper)
+
+        return html.Div(children=layout_children)
+
+    def get_menu_component_ids(self) -> Dict[str, str]:
+        """Get all menu-related component IDs for callback registration."""
+        menu_ids = {}
+
+        if not self.menu_config['enabled']:
+            return menu_ids
+
+        menu_ids['apply_button'] = f"{self.container_id}_menu_apply_button"
+
+        if self.menu_config['show_frame_selector']:
+            menu_ids['frame_selector'] = f"{self.container_id}_menu_frame_selector"
+
+        # Add data category dropdowns
+        first_frame_idx = self.menu_config['alterable_frames'][0]
+        frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
+
+        for category in frame_data_sources.keys():
+            menu_ids[f'{category}_dropdown'] = f"{self.container_id}_menu_{category}_dropdown"
+
+        if len(frame_data_sources) > 1:
+            menu_ids['data_tabs'] = f"{self.container_id}_menu_data_tabs"
+
+        return menu_ids
+
+    def register_menu_callbacks(self, app):
+        """Register callbacks for menu interactions."""
+        if not self.menu_config['enabled']:
+            return
+
+        menu_ids = self.get_menu_component_ids()
+        alterable_frames = self.menu_config['alterable_frames']
+
+        if not menu_ids.get('apply_button'):
+            return
+
+        # Create callback inputs/states
+        callback_inputs = [Input(menu_ids['apply_button'], 'n_clicks')]
+        callback_states = []
+
+        if 'frame_selector' in menu_ids:
+            callback_states.append(State(menu_ids['frame_selector'], 'value'))
+
+        # Add dropdown states
+        first_frame_idx = alterable_frames[0]
+        frame_data_sources = self.menu_config['data_sources'].get(first_frame_idx, {})
+
+        for category in frame_data_sources.keys():
+            dropdown_id = menu_ids[f'{category}_dropdown']
+            callback_states.append(State(dropdown_id, 'value'))
+
+        if 'data_tabs' in menu_ids:
+            callback_states.append(State(menu_ids['data_tabs'], 'value'))
+
+        # Create outputs for all alterable frames' first charts
+        callback_outputs = []
+        for frame_idx in alterable_frames:
+            if frame_idx < len(self.frames) and hasattr(self.frames[frame_idx], 'charts') and self.frames[
+                frame_idx].charts:
+                first_chart = self.frames[frame_idx].charts[0]
+                callback_outputs.append(Output(first_chart.chart_id, 'figure'))
+
+        if not callback_outputs:
+            return
+
+        @app.callback(
+            callback_outputs,
+            callback_inputs,
+            callback_states,
+            prevent_initial_call=True
+        )
+        def update_frames_from_menu(n_clicks, *state_values):
+            if n_clicks is None or n_clicks == 0:
+                return [dash.no_update] * len(callback_outputs)
+
+            state_idx = 0
+
+            # Get selected frame (if frame selector is enabled)
+            if 'frame_selector' in menu_ids:
+                selected_frame_idx = state_values[state_idx] if state_values[state_idx] is not None else \
+                alterable_frames[0]
+                state_idx += 1
+            else:
+                selected_frame_idx = alterable_frames[0]
+
+            # Get dropdown values
+            dropdown_values = {}
+            for category in frame_data_sources.keys():
+                dropdown_values[category] = state_values[state_idx]
+                state_idx += 1
+
+            # Get active tab (if multiple categories)
+            if 'data_tabs' in menu_ids:
+                active_tab = state_values[state_idx]
+                state_idx += 1
+            else:
+                active_tab = list(frame_data_sources.keys())[0].lower()
+
+            # Update the selected frame
+            if selected_frame_idx in alterable_frames and active_tab in dropdown_values:
+                selected_key = dropdown_values[active_tab]
+                if selected_key and selected_frame_idx < len(self.frames):
+                    target_frame = self.frames[selected_frame_idx]
+
+                    # Get new data from table client
+                    if hasattr(target_frame, 'table_client'):
+                        new_data = target_frame.table_client[selected_key]
+
+                        # Update the frame's first chart
+                        if hasattr(target_frame, 'charts') and target_frame.charts:
+                            target_chart = target_frame.charts[0]
+                            if hasattr(target_chart, 'update_data_source'):
+                                target_chart.update_data_source(new_data)
+
+                            # Generate outputs list
+                            outputs = []
+                            for frame_idx in alterable_frames:
+                                if frame_idx == selected_frame_idx:
+                                    outputs.append(target_chart.get_chart_figure())
+                                else:
+                                    outputs.append(dash.no_update)
+
+                            return outputs
+
+            return [dash.no_update] * len(callback_outputs)
+
+    def register_all_callbacks(self, app):
+        """Register callbacks for all frames in the grid plus menu callbacks."""
+        # Register existing frame callbacks
+        for frame in self.frames:
+            if hasattr(frame, 'register_callbacks'):
+                frame.register_callbacks(app)
+
+        # Register menu callbacks
+        self.register_menu_callbacks(app)
+
+    # Existing methods remain unchanged
+    def get_all_component_ids(self) -> Dict[str, Any]:
+        """Get all component IDs from all frames for callback management."""
+        all_ids = {
+            'container': self.container_id,
+            'frames': {},
+            'menu': self.get_menu_component_ids()
+        }
+
+        for i, frame in enumerate(self.frames):
+            frame_key = f'frame_{i}'
+            if hasattr(frame, 'get_component_ids'):
+                all_ids['frames'][frame_key] = frame.get_component_ids()
+            else:
+                all_ids['frames'][frame_key] = {'frame_id': f'{self.container_id}-frame-{i}'}
+
+        return all_ids
+
+    def update_frame(self, frame_index: int, new_frame: Union[FundamentalFrame, MarketFrame]):
+        """Update a specific frame in the grid."""
+        if 0 <= frame_index < len(self.frames):
+            self.frames[frame_index] = new_frame
+            # Reinitialize menu data
+            self._initialize_menu_data()
+        else:
+            raise IndexError(f"Frame index {frame_index} out of range")
+
+    def add_frame(self, frame: Union[FundamentalFrame, MarketFrame], position: Optional[int] = None):
+        """Add a new frame to the grid."""
+        if position is None:
+            self.frames.append(frame)
+        else:
+            self.frames.insert(position, frame)
+
+        # Recalculate grid and reinitialize menu
+        if self.grid_config['layout_type'] == 'auto':
+            self._calculate_auto_grid()
+        self._initialize_menu_data()
+
+    def remove_frame(self, frame_index: int):
+        """Remove a frame from the grid."""
+        if 0 <= frame_index < len(self.frames):
+            self.frames.pop(frame_index)
+
+            # Recalculate grid and reinitialize menu
+            if self.grid_config['layout_type'] == 'auto':
+                self._calculate_auto_grid()
+            self._initialize_menu_data()
+        else:
+            raise IndexError(f"Frame index {frame_index} out of range")
+
+    def create_callback(self, output_tuples:List[Tuple], input_tuples:List[Tuple], callback_function:Callable):
+        @callback(*[Output(comp_id, target) for comp_id, target in output_tuples],
+                  *[Input(comp_id, target) for comp_id, target in input_tuples])
+
+        def custom_callback(**kwargs):
+            return callback_function(**kwargs)
+
+
+# Enhanced configuration examples
+def create_enhanced_dashboard_configs():
+    """Extended configuration patterns including menu configurations."""
+
+    configs = {
+        'compact_dashboard_with_top_menu': {
+            'grid_config': {
+                'layout_type': 'manual',
+                'rows': 2,
+                'cols': 2,
+                'gap': '15px',
+                'responsive': True
+            },
+            'style_config': {
+                'container_width': '100%',
+                'frame_min_height': '350px',
+                'padding': '15px'
+            },
+            'menu_config': {
+                'enabled': True,
+                'position': 'top',
+                'size': {'width': '100%', 'height': '120px'},
+                'compact_mode': True,
+                'alterable_frames': [0, 1],  # Only first two frames
+                'categories': ['storage', 'prices'],
+                'menu_title': 'Quick Data Selection'
+            }
+        },
+
+        'left_sidebar_menu': {
+            'grid_config': {
+                'layout_type': 'auto',
+                'responsive': True
+            },
+            'style_config': {
+                'container_width': '100%'
+            },
+            'menu_config': {
+                'enabled': True,
+                'position': 'left',
+                'size': {'width': '280px', 'height': '100%'},
+                'compact_mode': False,
+                'alterable_frames': None,  # All frames
+                'categories': ['storage', 'prices', 'production'],
+                'show_frame_selector': True,
+                'menu_title': 'Data Control Panel'
+            }
+        },
+
+        'no_menu_layout': {
+            'grid_config': {
+                'layout_type': 'manual',
+                'rows': 1,
+                'cols': 3,
+                'gap': '20px'
+            },
+            'menu_config': {
+                'enabled': False
+            }
+        },
+
+        'custom_layout_with_bottom_menu': {
+            'grid_config': {
+                'layout_type': 'custom',
+                'rows': 3,
+                'cols': 4,
+                'gap': '20px',
+                'frame_positions': {
+                    0: {'row': 1, 'col': 1, 'col_span': 2},
+                    1: {'row': 1, 'col': 3, 'col_span': 2},
+                    2: {'row': 2, 'col': 1},
+                    3: {'row': 2, 'col': 2, 'row_span': 2},
+                    4: {'row': 2, 'col': 3, 'col_span': 2}
+                }
+            },
+            'menu_config': {
+                'enabled': True,
+                'position': 'bottom',
+                'size': {'width': '100%', 'height': '140px'},
+                'alterable_frames': [0, 2, 4],  # Specific frames only
+                'categories': ['storage', 'prices', 'production', 'consumption']
+            }
+        }
+    }
+
+    return configs
+
+
+# Usage examples:
+"""
+# Basic usage with menu
+frame_1 = FundamentalFrame(table_client, chart_configs_1)
+frame_2 = MarketFrame(market_table, chart_configs_2)
+frame_3 = FundamentalFrame(table_client, chart_configs_3)
+
+# Create grid with top menu (compact mode)
+grid = FrameGrid(
+    frames=[frame_1, frame_2, frame_3],
+    menu_config={
+        'enabled': True,
+        'position': 'top',
+        'compact_mode': True,
+        'alterable_frames': [0, 2],  # Only fundamental frames
+        'categories': ['storage', 'prices']
+    }
+)
+
+app.layout = grid.generate_layout(title="Energy Dashboard")
+grid.register_all_callbacks(app)
+
+# Advanced usage with left sidebar menu
+configs = create_enhanced_dashboard_configs()
+advanced_grid = FrameGrid(
+    frames=[frame_1, frame_2, frame_3, frame_4],
+    **configs['left_sidebar_menu']
+)
+
+# Custom menu with specific data sources
+custom_grid = FrameGrid(
+    frames=[frame_1, frame_2],
+    menu_config={
+        'enabled': True,
+        'position': 'right',
+        'size': {'width': '300px', 'height': '100%'},
+        'alterable_frames': [0],  # Only first frame
+        'data_sources': {
+            0: {  # Frame 0 data sources
+                'storage': {
+                    'Total Lower 48': 'storage/total_lower_48',
+                    'East Region': 'storage/east_region'
+                },
+                'prices': {
+                    'Henry Hub': 'prices/henry_hub_daily',
+                    'Contract 1': 'prices/NG_1'
+                }
+            }
+        },
+        'show_frame_selector': False,
+        'menu_title': 'Natural Gas Data'
+    }
+)
+
+# Disable menu for static dashboard
+static_grid = FrameGrid(
+    frames=[frame_1, frame_2, frame_3],
+    menu_config={'enabled': False},
+    grid_config={'layout_type': 'manual', 'rows': 1, 'cols': 3}
+)
+"""
