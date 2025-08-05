@@ -27,33 +27,29 @@ Features:
 """
 
 # pages/trade_bal.py
-import dash
-from dotenv import load_dotenv
 from layouts.agriculture import import_export_layout
 from callbacks.agricultural import import_export_callbacks
-load_dotenv('.env')
 from data.data_tables import FASTable
-from  dash import html, Input, Output
 
-# Initialize the Dash app
-data_type = None
-dash.register_page(__name__, path ='/trade_bal' ,path_template='/trade_bal/<data_type>', title=f"{data_type}")
+import dash
+from dash import dcc, html, Input, Output, callback
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
 
 # Initialize TableClient
 table_client = FASTable()
-cbs = import_export_callbacks(table_client)
 
-# Set the layout using the function (default to imports)
+
+# Initialize the Dash app
+dash.register_page(__name__, path_template='/trade_bal/<data_type>')
+app = dash.get_app()
+
+
 def layout(data_type=None, **kwargs):
     if not data_type:
         return html.Div('Invalid trade type (select imports or exports)')
     else:
-
-        return import_export_layout(data_type)
-
-
-    
-
-
+        return import_export_layout(data_type),
 
 

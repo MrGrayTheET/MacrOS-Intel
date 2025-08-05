@@ -240,7 +240,7 @@ oats = "601"
 
 [esr.alias]
 cattle = "beef"
-hog = "pork"
-soybean = "soybeans"
+hogs = "pork"
+soybeans = "soybeans"
 wheat = "wheat"
 corn = "corn"

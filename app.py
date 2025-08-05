@@ -30,10 +30,13 @@ navbar = dbc.NavbarSimple(
     color="dark",
     dark=True,
     children=[
-        dbc.NavItem(dbc.NavLink(id='psd-data', href="/energy/ng_storage")),
+        dbc.NavItem(dbc.NavLink(id='psd-data-link', href="/psd_data")),
+        dbc.NavItem(dbc.NavLink(id='trade-bal-link', href="/trade_bal/imports")),
     ]
 )
 
+from pages import trade_bal
+from pages.agricultural import psd_data
 
 # Main layout
 app.layout = html.Div([
@@ -46,6 +49,8 @@ app.layout = html.Div([
     )
 ])
 
+@app.callback(Input('url', 'value'),
+              Output())
 
 if __name__ == "__main__":
     app.run(debug=True)

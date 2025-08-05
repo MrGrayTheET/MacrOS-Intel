@@ -120,7 +120,7 @@ def clean_numeric_columns(df):
 
     # Convert string columns to numeric where possible
     for col in df_clean.columns:
-        if df_clean[col].dtype == 'object':
+        if df_clean[col].data_type == 'object':
             # Try converting to numeric
             numeric_series = pd.to_numeric(df_clean[col].str.strip(','), errors='coerce')
 

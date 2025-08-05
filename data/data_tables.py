@@ -6,6 +6,8 @@ import requests
 import toml
 from copy import deepcopy
 import numpy as np
+from enum import Enum
+
 
 # Import from config instead of using dotenv directly
 try:
@@ -39,7 +41,7 @@ except ImportError as e:
 try:
     # Update import paths to match your structure
     from data.sources.usda.nass_utils import calc_dates, clean_numeric_column as clean_col, clean_fas
-    from data.sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict
+    from data.sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict, rev_lookup, valid_codes, code_lookup
     from data.sources.usda.api_wrappers.esr_api import USDAESR
 except ImportError as e:
     print(f"Warning: Could not import USDA modules: {e}")
@@ -468,11 +470,10 @@ class NASSTable(TableClient):
 
 # Foreign Agricultural Service
 # Can also pull from NASSTable without calling any prefix or arguments
+
 class FASTable(TableClient):
     psd = PSD_API()
-
     comms, attrs, countries = CommodityCode, AttributeCode, CountryCode
-
     # Shares the same table as NASSTable for convenience’s sake as they link to the same commodities and agency
     def __init__(self, commodity=None):
         super().__init__(client=self.psd, data_folder=DATA_PATH, db_file_name='nass_agri_stats.hd5',
@@ -488,10 +489,27 @@ class FASTable(TableClient):
             self.esr_codes = data_map['esr']
         self.rename = False
 
-    def psd_summary(self, commodity=None, start_year=1982, end_year=2025):
+    def update_psd(self, commodity=None, start_year=1982, end_year=2025):
+        if isinstance(commodity,Enum):
+            if rev_lookup.get(commodity, False):
+                table_key = rev_lookup[commodity]
+                code = commodity.value
+            else:
+                table_key = commodity.name.lower()
+                code = commodity.value
+        else:
+            if comms_dict.get(commodity, False):
+                table_key = commodity
+                code = comms_dict.get(commodity)
+            elif commodity in valid_codes:
+                table_key = code_lookup[commodity].lower()
+                code = commodity
+            else:
+                return print(f'Unable to find valid Commodity/Code for {commodity}')
+
         years = list(range(start_year, end_year))
-        sd_summary = self.client.get_supply_demand_summary(commodity=self.code, country=self.country, years=years)
-        sd_summary.to_hdf(self.table_db, key=f'{self.prefix}/psd/summary')
+        sd_summary = self.client.get_supply_demand_summary(commodity=code, country=self.country, years=years)
+        sd_summary.to_hdf(self.table_db, key=f'{table_key}/psd/summary')
 
         return sd_summary
 
@@ -564,7 +582,6 @@ class FASTable(TableClient):
             else:
                 print(f'Failed to get country {t}')
                 failed_countries.append(t)
-
         if dest_dfs:
             export_year_df = pd.concat(dest_dfs, axis=0)
             export_year_df.to_hdf(self.table_db, f'{table_name}/exports/{market_year}')

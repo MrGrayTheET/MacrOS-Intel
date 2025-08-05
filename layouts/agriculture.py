@@ -1,34 +1,26 @@
+#layouts/agriculture.py
 from datetime import date
 
+# Fixed layout - ensure component IDs match callback expectations
+
+from datetime import date
 from dash import html, dcc
 import dash_bootstrap_components as dbc
-from components.frames import FundamentalFrame, MarketFrame, FrameGrid, create_enhanced_dashboard_configs
-from data.data_tables import TableClient, FASTable
-from callbacks.agricultural import import_export_callbacks
 
 
-def import_export_layout(data_type:str="imports", data_source=None):
-    """
-    Generate layout for different data types (imports/exports)
+def import_export_layout(data_type: str = "imports", data_source=None):
+    """Generate layout for different data types (imports/exports)"""
 
-    Parameters:
-    -----------
-    data_type : str, default "imports"
-        Type of data to analyze (imports, exports, etc.)
-    data_source : pd.DataFrame, optional
-        Custom data source. If None, uses default data for data_type
-    """
+    from data.data_tables import FASTable
     table_client = FASTable()
 
     # Get initial data and available commodities
     available_keys = table_client.available_keys()
-    # Filter for specified data key_type keys and extract commodity names
-    data_keys = [key for key in available_keys if key.endswith(f'/{data_type}')]
-    available_commodities = [key.replace(f'/{data_type}', '') for key in data_keys]
+    data_keys = [key for key in available_keys if key.endswith(f'{data_type}')]
+    available_commodities = [key.split('/')[0] for key in data_keys]
 
     if not available_commodities:
-        # Fallback if no keys found for the data key_type
-        available_commodities = ['wheat', 'corn', 'rice']  # Add your fallback commodities
+        available_commodities = ['wheat', 'corn', 'rice']
 
     default_commodity = available_commodities[0]
 
@@ -53,15 +45,19 @@ def import_export_layout(data_type:str="imports", data_source=None):
 
             # Commodity selector
             html.Div([
-                html.Label("Select Commodity:",
-                           className='form-label'),
+                html.Label("Select Commodity:", className='form-label'),
                 dcc.Dropdown(
-                    id='commodity-dropdown',
-                    options=[{'label': commodity.title(), 'value': commodity} for commodity in available_commodities],
-                    value=available_commodities[0],  # Default to first commodity
+                    id='commodity-dropdown',  # ✓ Matches callback
+                    options=[{'label': commodity.title(), 'value': commodity}
+                             for commodity in available_commodities],
+                    value=available_commodities[0],
                     className='commodity-dropdown dark-dropdown'
-                )
-            ], className='commodity-selector-container')
+                ),
+            ], className='commodity-selector-container'),
+
+            # Store components
+            dcc.Store(id='data-key-type', data={'key-type': data_type}),  # ✓ Matches callback
+            dcc.Store(id='trade-data'),  # ✓ Matches callback
 
         ], className='dashboard-header'),
 
@@ -76,21 +72,20 @@ def import_export_layout(data_type:str="imports", data_source=None):
                     # Controls for time series
                     html.Div([
                         html.Div([
-                            html.Label("Select Country:",
-                                       className='form-label'),
+                            html.Label("Select Country:", className='form-label'),
                             dcc.Dropdown(
-                                id='country-dropdown',
-                                options=[{'label': country, 'value': country} for country in countries],
+                                id='country-dropdown',  # ✓ Matches callback
+                                options=[{'label': country, 'value': country}
+                                         for country in countries],
                                 value=countries[0] if countries else None,
                                 className='control-dropdown dark-dropdown'
                             )
                         ], className='control-column-left'),
 
                         html.Div([
-                            html.Label("Select Date Range:",
-                                       className='form-label'),
+                            html.Label("Select Date Range:", className='form-label'),
                             dcc.DatePickerRange(
-                                id='date-range-picker',
+                                id='date-range-picker-trade',  # ✓ Fixed to match callback
                                 start_date=date(2020, 1, 1),
                                 end_date=date(2024, 12, 31),
                                 display_format='YYYY-MM-DD',
@@ -100,7 +95,7 @@ def import_export_layout(data_type:str="imports", data_source=None):
                     ], className='controls-row'),
 
                     # Time series chart
-                    dcc.Graph(id='time-series-chart')
+                    dcc.Graph(id='time-series-chart')  # ✓ Matches callback
 
                 ], className='chart-card')
             ]),
@@ -114,21 +109,20 @@ def import_export_layout(data_type:str="imports", data_source=None):
                     # Controls for breakdown
                     html.Div([
                         html.Div([
-                            html.Label("Select Year:",
-                                       className='form-label'),
+                            html.Label("Select Year:", className='form-label'),
                             dcc.Dropdown(
-                                id='year-dropdown',
-                                options=[{'label': str(year), 'value': year} for year in years],
-                                value=years[-1] if years else None,  # Default to most recent year
+                                id='year-dropdown',  # ✓ Matches callback
+                                options=[{'label': str(year), 'value': year}
+                                         for year in years],
+                                value=years[-1] if years else None,
                                 className='control-dropdown dark-dropdown'
                             )
                         ], className='control-column-left'),
 
                         html.Div([
-                            html.Label("Chart Type:",
-                                       className='form-label'),
+                            html.Label("Chart Type:", className='form-label'),
                             dcc.RadioItems(
-                                id='chart-key_type-radio',
+                                id='chart-type-radio',  # ✓ Fixed ID to match callback
                                 options=[
                                     {'label': 'Pie Chart', 'value': 'pie'},
                                     {'label': 'Bar Chart', 'value': 'bar'}
@@ -141,22 +135,18 @@ def import_export_layout(data_type:str="imports", data_source=None):
                     ], className='controls-row'),
 
                     # Breakdown chart
-                    dcc.Graph(id='breakdown-chart')
+                    dcc.Graph(id='breakdown-chart')  # ✓ Matches callback
 
                 ], className='chart-card')
             ]),
 
             # Third row: Summary statistics
             html.Div([
-                html.H3("Summary Statistics",
-                        className='section-title'),
-                html.Div(id='summary-stats')
+                html.H3("Summary Statistics", className='section-title'),
+                html.Div(id='summary-stats')  # ✓ Matches callback
             ], className='stats-card')
 
         ], className='main-content'),
-
-        # Store data_type in a hidden div for callbacks to access
-        html.Div(id='data-key_type-store', children=data_type, className='hidden-store')
 
     ], className='dashboard-container')
 

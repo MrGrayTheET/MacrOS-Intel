@@ -80,7 +80,7 @@ REVERSE_GROUP_LOOKUP: Dict[str, CommodityGroup] = {}
 
 for group in CommodityGroup:
     for code_enum in group.value:
-        REVERSE_GROUP_LOOKUP[code_enum.value] = code_enum
+        REVERSE_GROUP_LOOKUP[code_enum.value] = group
 
 class AttributeCode(Enum):
     """Common PSD attribute codes"""
@@ -159,7 +159,12 @@ class QueryParameters:
     sortOrder: str = "Commodity/Attribute/Country"
     topCountryState: bool = False
 
-comms_dict = dict(cattle=CommodityCode.BEEF_VEAL, pork=CommodityCode.PORK, corn = CommodityCode.CORN, soybeans = CommodityCode.SOYBEANS, soy_meal = CommodityCode.SOYBEAN_MEAL)
+
+
+code_lookup = {k.value:k for k in CommodityCode}
+comms_dict = dict(cattle=CommodityCode.BEEF_VEAL.value, hogs=CommodityCode.PORK.value, corn = CommodityCode.CORN.value, soybeans = CommodityCode.SOYBEANS.value, soy_meal = CommodityCode.SOYBEAN_MEAL.value)
+valid_codes = {v.value for v in CommodityCode}
+rev_lookup = {v:k for k,v in comms_dict.items()}
 attrs_dict = dict(imports = AttributeCode.IMPORTS, exports = AttributeCode.EXPORTS, consumption = AttributeCode.DOMESTIC_CONSUMPTION, ending_stocks=AttributeCode.ENDING_STOCKS)
 
 # Helper function
@@ -197,6 +202,7 @@ class PSD_API:
         self.cleaning_func = {
             CommodityGroup.LIVESTOCK:clean_livestock,
             CommodityGroup.GRAINS:clean_grains,
+            CommodityGroup.SOY_PRODUCTS:clean_grains
         }
 
     def _make_request(self, endpoint: str, payload: Dict) -> Union[Dict, List]:
@@ -241,7 +247,7 @@ class PSD_API:
         payload = {k: v for k, v in asdict(params).items() if v is not None and k is not "group"}
         years = payload['marketYears']
         code = payload['commodities']
-        comm_group = REVERSE_GROUP_LOOKUP[code]
+        comm_group = REVERSE_GROUP_LOOKUP[code[0]]
 
         if isinstance(comm_group, List) and len(pd.Series(comm_group).unique()) < 2:
             comm_group = comm_group[0]

@@ -27,3 +27,4 @@ def register_global_callbacks(app):
             settings.update(app_state['settings'])
             return settings
         return current_settings
+

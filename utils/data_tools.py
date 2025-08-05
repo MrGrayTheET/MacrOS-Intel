@@ -86,6 +86,26 @@ def calc_contract_spreads(df, second_month=False):
 
     return df
 
+def store_to_df(store_data,
+                index_column=['Partner','date'],
+                          datetime_date_col=True):
+    df = pd.DataFrame(store_data)
+    df['date'] = pd.to_datetime(df['date']) if datetime_date_col else df['date']
+    df.set_index(keys=index_column, inplace=True) if index_column else None
+
+    return df
+
+def df_to_store(df:pd.DataFrame, reset_index=True, new_data :dict=None):
+    store_df = df.copy()
+    if reset_index:
+        store_df.reset_index(inplace=True)
+    if new_data:
+        for k, v in new_data.items():
+            store_df[k] = v
+
+    data_store = store_df.to_dict('records')
+    return data_store
+
 
 
 

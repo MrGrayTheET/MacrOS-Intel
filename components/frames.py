@@ -1,10 +1,9 @@
 import sys
-
 from dash.dcc import Tabs
-
 from components.chart_components import FundamentalChart, MarketChart, COTPlotter as COTPlot
 from dotenv import load_dotenv
 import dash
+from callbacks.callback_registry import CallbackRegistry
 from dash import dcc, html, dash_table, Input, Output, State
 from data.data_tables import MarketTable, TableClient, FASTable
 import pandas as pd
@@ -342,11 +341,9 @@ class MarketFrame:
                     return chart.get_chart_figure()
         return None
 
-
 import pandas as pd
 from typing import List, Dict, Any, Optional, Union
 from dash import html, dcc, Input, Output, State, dash, no_update, callback
-
 
 class FrameGrid:
     """
@@ -434,6 +431,7 @@ class FrameGrid:
         # Calculate grid dimensions if auto
         if self.grid_config['layout_type'] == 'auto':
             self._calculate_auto_grid()
+        self.callback_registry = CallbackRegistry()
 
     def _initialize_menu_data(self):
         """Initialize menu data sources from frames with optional filtering."""
@@ -1266,6 +1264,15 @@ class FrameGrid:
 
         return all_ids
 
+    def get_frame_charts(self):
+        frame_charts = {}
+
+        for i, frame in enumerate(self.frames):
+            if hasattr(frame, 'charts'):
+                frame_charts.update({i:frame.charts})
+
+        return frame_charts
+
     def update_frame(self, frame_index: int, new_frame: Union[FundamentalFrame, MarketFrame]):
         """Update a specific frame in the grid."""
         if 0 <= frame_index < len(self.frames):
@@ -1299,12 +1306,6 @@ class FrameGrid:
         else:
             raise IndexError(f"Frame index {frame_index} out of range")
 
-    def create_callback(self, output_tuples:List[Tuple], input_tuples:List[Tuple], callback_function:Callable):
-        @callback(*[Output(comp_id, target) for comp_id, target in output_tuples],
-                  *[Input(comp_id, target) for comp_id, target in input_tuples])
-
-        def custom_callback(**kwargs):
-            return callback_function(**kwargs)
 
 
 # Enhanced configuration examples

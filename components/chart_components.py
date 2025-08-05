@@ -74,7 +74,7 @@ class MarketChart:
         for col in resampled_data.columns:
             if col in self.ohlc_agg:
                 agg_dict[col] = self.ohlc_agg[col]
-            elif resampled_data[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+            elif resampled_data[col].data_type in ['float64', 'int64', 'float32', 'int32']:
                 agg_dict[col] = 'mean'
             else:
                 agg_dict[col] = 'last'
