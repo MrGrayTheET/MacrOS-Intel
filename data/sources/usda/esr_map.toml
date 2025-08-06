@@ -4,18 +4,18 @@ trade_balance = "F:\\Macro\\trade_balance"
 exports = "F:\\Macro\\exports"
 
 [aliases.imports]
-pork = "hog"
+pork = "hogs"
 beef = "cattle"
 cocoa = "cocoa"
 coffee = "coffee"
 
 [aliases.exports]
-soybean = "soybean"
+soybeans = "soybean"
 soybean_meal = "soybean_meal"
 soybean_oil = "soybean_oil"
 beef = "cattle"
 wheat = "wheat"
-pork = "hog"
+pork = "hogs"
 
 [esr.countries]
 "EUROPEAN UNION" = "1"

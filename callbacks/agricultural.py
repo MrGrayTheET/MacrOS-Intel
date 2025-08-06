@@ -9,7 +9,6 @@ from dash import Input, Output
 import dash
 
 
-
 class import_export_callbacks:
 
     def __init__(self, table_client: TableClient):

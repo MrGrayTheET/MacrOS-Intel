@@ -6,7 +6,7 @@ import os
 import sys
 from  dotenv import load_dotenv
 from pathlib import Path
-from callbacks.esr import register_esr_callbacks
+# ESR callbacks are handled in pages.esr.home module
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,7 +39,6 @@ navbar = dbc.NavbarSimple(
 
 from pages import trade_bal
 from pages.agricultural import psd_data
-from pages.esr import *
 from pages.esr import home
 
 # Main layout
@@ -52,7 +51,6 @@ app.layout = html.Div([
         className="p-4"
     )
 ])
-register_esr_callbacks(app)
 
 if __name__ == "__main__":
     app.run(debug=True)

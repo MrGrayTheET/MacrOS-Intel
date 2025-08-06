@@ -7,6 +7,9 @@ import toml
 from copy import deepcopy
 import numpy as np
 from enum import Enum
+import asyncio
+import aiohttp
+from typing import List, Dict, Optional, Tuple
 
 
 # Import from config instead of using dotenv directly
@@ -124,11 +127,24 @@ class TableClient:
         """Get available keys from HDF5 store"""
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
+                all_keys = list(store.keys())
+                print(f"Raw store keys: {all_keys}")  # Debug logging
+                
                 if hasattr(self, 'prefix') and self.prefix:
-                    tables = [k[1 + len(self.prefix):] for k in store.keys() if
-                              k[1:].startswith(self.prefix)]
+                    # Filter keys that start with the prefix
+                    prefix_with_slash = f"/{self.prefix}/"
+                    tables = []
+                    for k in all_keys:
+                        if k.startswith(prefix_with_slash):
+                            # Remove the prefix and leading slash to get the relative key
+                            relative_key = k[len(prefix_with_slash):]
+                            tables.append(relative_key)
+                    print(f"Filtered keys for prefix '{self.prefix}': {tables}")  # Debug logging
                 else:
-                    tables = [k[1:] for k in store.keys()]
+                    # Remove leading slash from all keys
+                    tables = [k[1:] if k.startswith('/') else k for k in all_keys]
+                    print(f"All keys (no prefix filter): {tables}")  # Debug logging
+                    
             return tables
         except Exception as e:
             print(f"Error accessing HDF5 store: {e}")
@@ -138,8 +154,20 @@ class TableClient:
         """Get data for a specific key"""
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
-                key = f'{self.prefix}/{key}' if hasattr(self, 'prefix') and self.prefix and use_prefix else f'{key}'
-                table = store[f'{key}']
+                # Construct the full key path
+                if hasattr(self, 'prefix') and self.prefix and use_prefix:
+                    full_key = f'{self.prefix}/{key}'
+                else:
+                    full_key = key
+                
+                # Ensure key starts with '/' for HDF5 compatibility
+                if not full_key.startswith('/'):
+                    full_key = f'/{full_key}'
+                
+                print(f"Attempting to access key: {full_key}")  # Debug logging
+                print(f"Available keys: {list(store.keys())}")  # Debug logging
+                
+                table = store[full_key]
 
             col_value = table.columns[0] if self.data_col is None else self.data_col
             if use_simple_name:
@@ -148,7 +176,7 @@ class TableClient:
 
             return table
         except Exception as e:
-            print(f"Error getting key {key}: {e}")
+            print(f"Error getting key {key} (full_key: {full_key if 'full_key' in locals() else 'unknown'}): {e}")
             return pd.DataFrame()
 
     def get_keys(self, keys: list, use_prefix=True, use_simple_name=True):
@@ -156,10 +184,22 @@ class TableClient:
         dfs = []
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
+                print(f"Available keys in store: {list(store.keys())}")  # Debug logging
+                
                 for k in keys:
-                    key = f'{self.prefix}/{k}' if hasattr(self, 'prefix') and self.prefix and use_prefix else f'{k}'
+                    # Construct the full key path
+                    if hasattr(self, 'prefix') and self.prefix and use_prefix:
+                        full_key = f'{self.prefix}/{k}'
+                    else:
+                        full_key = k
+                    
+                    # Ensure key starts with '/' for HDF5 compatibility
+                    if not full_key.startswith('/'):
+                        full_key = f'/{full_key}'
+                    
                     try:
-                        table = store[f'{key}']
+                        print(f"Attempting to access key: {full_key}")  # Debug logging
+                        table = store[full_key]
                         if isinstance(table, pd.DataFrame):
                             if use_simple_name:
                                 col = key_to_name(k)
@@ -176,7 +216,7 @@ class TableClient:
 
                         dfs.append(data)
                     except KeyError:
-                        print(f"Key {key} not found in store")
+                        print(f"Key {full_key} not found in store")
                         continue
 
             if dfs:
@@ -188,6 +228,101 @@ class TableClient:
         except Exception as e:
             print(f"Error getting keys: {e}")
             return pd.DataFrame()
+
+    def rename_table_keys(self, old_pattern: str, new_pattern: str, dry_run: bool = True) -> Dict[str, str]:
+        """
+        Rename tables in HDF5 store by pattern matching.
+        
+        Args:
+            old_pattern: Pattern to match in existing keys (e.g., 'soybean')
+            new_pattern: Replacement pattern (e.g., 'soybeans') 
+            dry_run: If True, only show what would be renamed without making changes
+            
+        Returns:
+            Dict mapping old keys to new keys
+        """
+        rename_map = {}
+        
+        try:
+            with pd.HDFStore(self.table_db, mode='r') as store:
+                all_keys = list(store.keys())
+                
+                # Find keys that match the pattern
+                matching_keys = [k for k in all_keys if old_pattern in k]
+                
+                if not matching_keys:
+                    print(f"No keys found matching pattern '{old_pattern}'")
+                    return rename_map
+                
+                print(f"Found {len(matching_keys)} keys matching pattern '{old_pattern}':")
+                for key in matching_keys:
+                    new_key = key.replace(old_pattern, new_pattern)
+                    rename_map[key] = new_key
+                    print(f"  {key} -> {new_key}")
+                
+                if dry_run:
+                    print("\nDry run mode - no changes made. Set dry_run=False to apply changes.")
+                    return rename_map
+            
+            # Actually perform the rename operation
+            print(f"\nRenaming {len(rename_map)} tables...")
+            
+            with pd.HDFStore(self.table_db, mode='a') as store:
+                for old_key, new_key in rename_map.items():
+                    try:
+                        # Read data from old key
+                        data = store[old_key]
+                        
+                        # Write to new key
+                        store[new_key] = data
+                        print(f"✓ Copied {old_key} -> {new_key}")
+                        
+                        # Remove old key
+                        del store[old_key]
+                        print(f"✓ Removed {old_key}")
+                        
+                    except Exception as e:
+                        print(f"✗ Error renaming {old_key} -> {new_key}: {e}")
+                        # Try to clean up if new key was created but old key couldn't be deleted
+                        try:
+                            if new_key in store:
+                                del store[new_key]
+                        except:
+                            pass
+            
+            print(f"\nCompleted renaming {len(rename_map)} tables")
+            
+        except Exception as e:
+            print(f"Error during rename operation: {e}")
+            
+        return rename_map
+
+    def list_all_tables(self) -> List[str]:
+        """List all tables in the HDF5 store with their sizes."""
+        try:
+            with pd.HDFStore(self.table_db, mode='r') as store:
+                all_keys = list(store.keys())
+                
+                print(f"HDF5 Store: {self.table_db}")
+                print(f"Total tables: {len(all_keys)}")
+                print("-" * 60)
+                
+                for key in sorted(all_keys):
+                    try:
+                        data = store[key]
+                        if hasattr(data, 'shape'):
+                            shape_info = f"{data.shape[0]} rows x {data.shape[1]} cols"
+                        else:
+                            shape_info = f"{len(data)} items"
+                        print(f"{key:<40} {shape_info}")
+                    except Exception as e:
+                        print(f"{key:<40} Error: {e}")
+                        
+                return all_keys
+                
+        except Exception as e:
+            print(f"Error listing tables: {e}")
+            return []
 
     def __getitem__(self, item):
         """Allow dict-like access"""
@@ -478,7 +613,7 @@ class FASTable(TableClient):
     def __init__(self, commodity=None):
         super().__init__(client=self.psd, data_folder=DATA_PATH, db_file_name='nass_agri_stats.hd5',
                          key_prefix=commodity, rename_on_load=False)
-        self.esr = USDAESR(FAS_TOKEN)
+        self.esr = USDAESR()
         self.prefix = commodity if commodity else None
         self.code = comms_dict[commodity] if commodity else None
         self.country = CountryCode.UNITED_STATES
@@ -551,12 +686,22 @@ class FASTable(TableClient):
         top_res = self.get_top_sources_by_year(commodity, selected_year=market_year)
         top_destinations = top_res.index.to_list()
 
+        # Translate commodity table name to ESR commodity code
+        # Step 1: commodity (e.g., "cattle") -> commodity_name (e.g., "beef") via esr.alias 
+        # Step 2: commodity_name (e.g., "beef") -> commodity_code (e.g., "1701") via esr.commodities
+        
         if commodity.lower() in self.esr_codes['alias'].keys():
-            commodity_code = self.esr_codes['commodities'][self.esr_codes['alias'][commodity]]
+            # Get the commodity name from the alias (cattle -> beef, hogs -> pork, etc.)
+            commodity_name = self.esr_codes['alias'][commodity.lower()]
+            # Get the commodity code from the commodity name (beef -> 1701, pork -> 1702, etc.)
+            commodity_code = self.esr_codes['commodities'][commodity_name]
             table_name = commodity.lower()
         else:
-            commodity_code = self.esr_codes[commodity]
-            table_name = self.aliases[commodity]
+            # Fallback: assume commodity is already the commodity name (beef, pork, etc.)
+            commodity_code = self.esr_codes['commodities'].get(commodity.lower())
+            if not commodity_code:
+                raise ValueError(f"Unknown commodity: {commodity}. Available: {list(self.esr_codes['alias'].keys())}")
+            table_name = commodity.lower()
 
         dest_dfs = []
         failed_countries = []
@@ -596,3 +741,378 @@ class WeatherTable(TableClient):
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None):
         return
+
+
+class ESRTableClient(FASTable):
+    """
+    Extended TableClient specifically for ESR data handling.
+    Includes methods for ESR-specific data processing and filtering.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def get_esr_data(self, commodity, year=None, country=None,
+                     start_date=None, end_date=None):
+        """
+        Get ESR data with optional filtering.
+
+        Args:
+            commodity: Commodity name (e.g., 'wheat', 'corn', 'soybeans')
+            year: Marketing year (optional)
+            country: Country filter (optional)
+            start_date: Start date filter (optional)
+            end_date: End date filter (optional)
+
+        Returns:
+            pd.DataFrame: Filtered ESR data
+        """
+        # Construct key based on ESR format: {commodity}/exports/{year}
+        if year:
+            key = f"{commodity}/exports/{year}"
+        else:
+            # Get most recent year available
+            available_keys = self.available_keys()
+            commodity_keys = [k for k in available_keys if k.startswith(f"/{commodity}/exports/")]
+            if not commodity_keys:
+                return pd.DataFrame()
+
+            # Get latest year
+            years = [int(k.split('/')[-1]) for k in commodity_keys if k.split('/')[-1].isdigit()]
+            if not years:
+                return pd.DataFrame()
+
+            latest_year = max(years)
+            key = f"{commodity}/exports/{latest_year}"
+
+        # Get base data
+        data = self.get_key(key)
+
+        if data is None or data.empty:
+            return pd.DataFrame()
+
+        # Apply filters
+        if country:
+            data = data[data['country'].str.contains(country, case=False, na=False)]
+
+        if start_date:
+            data = data[pd.to_datetime(data['weekEndingDate']) >= pd.to_datetime(start_date)]
+
+        if end_date:
+            data = data[pd.to_datetime(data['weekEndingDate']) <= pd.to_datetime(end_date)]
+
+        return data
+
+    def get_multi_year_esr_data(self, commodity, years=None, country=None, 
+                               start_year=None, end_year=None):
+        """
+        Get ESR data concatenated from multiple years.
+
+        Args:
+            commodity: Commodity name
+            years: List of years (if None, uses start_year/end_year or last 5 years)
+            country: Optional country filter
+            start_year: Start year for range (alternative to years list)
+            end_year: End year for range (alternative to years list)
+
+        Returns:
+            pd.DataFrame: Concatenated ESR data
+        """
+        if years is None:
+            if start_year and end_year:
+                years = list(range(start_year, end_year + 1))
+            else:
+                current_year = pd.Timestamp.now().year
+                years = list(range(current_year - 4, current_year + 1))
+
+        all_data = []
+
+        for year in years:
+            year_data = self.get_esr_data(commodity, year, country)
+            if not year_data.empty:
+                year_data['marketing_year'] = year
+                all_data.append(year_data)
+
+        if all_data:
+            combined_data = pd.concat(all_data, ignore_index=True)
+            combined_data = combined_data.sort_values(['marketing_year', 'weekEndingDate'])
+            return combined_data
+
+        return pd.DataFrame()
+
+    def get_available_commodities(self):
+        """Get list of available commodities in ESR data."""
+        available_keys = self.available_keys()
+        commodities = set()
+
+        for key in available_keys:
+            if '/exports/' in key:
+                parts = key.split('/')
+                if len(parts) >= 2:
+                    commodity = parts[1]  # Remove leading /
+                    commodities.add(commodity)
+
+        return sorted(list(commodities))
+
+    def get_available_years(self, commodity):
+        """Get available years for a specific commodity."""
+        available_keys = self.available_keys()
+        years = set()
+
+        for key in available_keys:
+            if f"/{commodity}/exports/" in key:
+                parts = key.split('/')
+                if len(parts) >= 4 and parts[-1].isdigit():
+                    years.add(int(parts[-1]))
+
+        return sorted(list(years))
+
+    def get_available_countries(self, commodity, year=None):
+        """Get available countries for a commodity."""
+        data = self.get_esr_data(commodity, year)
+        if not data.empty and 'country' in data.columns:
+            return sorted(data['country'].unique().tolist())
+        return []
+    
+    def get_top_countries(self, commodity, metric='weeklyExports', top_n=10, 
+                         start_year=None, end_year=None):
+        """
+        Get top N countries by export metric for dynamic menu population.
+        
+        Args:
+            commodity: Commodity name
+            metric: Metric to rank by ('weeklyExports', 'outstandingSales', etc.)
+            top_n: Number of top countries to return
+            start_year: Start year for analysis (optional)
+            end_year: End year for analysis (optional)
+            
+        Returns:
+            List of country names sorted by metric (descending)
+        """
+        try:
+            # Get multi-year data for ranking
+            data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
+            
+            if data.empty or metric not in data.columns:
+                return []
+            
+            # Aggregate by country
+            country_totals = data.groupby('country')[metric].sum().sort_values(ascending=False)
+            
+            # Return top N countries
+            top_countries = country_totals.head(top_n).index.tolist()
+            
+            return top_countries
+            
+        except Exception as e:
+            print(f"Error getting top countries: {e}")
+            return []
+
+    def aggregate_esr_data(self, data, group_by='country', time_period='weekly'):
+        """
+        Aggregate ESR data by different dimensions.
+
+        Args:
+            data: ESR DataFrame
+            group_by: 'country', 'commodity', or 'month'
+            time_period: 'weekly', 'monthly', 'quarterly'
+
+        Returns:
+            pd.DataFrame: Aggregated data
+        """
+        if data.empty:
+            return pd.DataFrame()
+
+        # Ensure weekEndingDate is datetime
+        data['weekEndingDate'] = pd.to_datetime(data['weekEndingDate'])
+
+        # Create time grouping column
+        if time_period == 'monthly':
+            data['time_group'] = data['weekEndingDate'].dt.to_period('M')
+        elif time_period == 'quarterly':
+            data['time_group'] = data['weekEndingDate'].dt.to_period('Q')
+        else:  # weekly
+            data['time_group'] = data['weekEndingDate']
+
+        # Define aggregation functions
+        agg_functions = {
+            'weeklyExports': 'sum',
+            'accumulatedExports': 'last',
+            'outstandingSales': 'last',
+            'grossNewSales': 'sum',
+            'currentMYNetSales': 'sum',
+            'currentMYTotalCommitment': 'last',
+            'nextMYOutstandingSales': 'last',
+            'nextMYNetSales': 'sum'
+        }
+
+        # Group and aggregate
+        if group_by == 'country':
+            grouped = data.groupby(['time_group', 'country']).agg(agg_functions).reset_index()
+        elif group_by == 'commodity':
+            grouped = data.groupby(['time_group', 'commodity']).agg(agg_functions).reset_index()
+        else:  # total
+            grouped = data.groupby('time_group').agg(agg_functions).reset_index()
+
+        return grouped
+
+    async def ESR_multi_year_update(self, commodity: str, start_year: int, end_year: int, 
+                                   top_n: int = 10, max_concurrent: int = 3) -> Dict[str, any]:
+        """
+        Update ESR data for multiple years using async/await for parallelization.
+        Uses asyncio instead of threading because:
+        - I/O-bound operations (API calls) benefit more from async
+        - Better resource efficiency (single thread + event loop)
+        - Natural error propagation and handling
+        - Built-in concurrency control
+        
+        Args:
+            commodity: Commodity name
+            start_year: Starting marketing year
+            end_year: Ending marketing year  
+            top_n: Number of top countries to update (default: 10)
+            max_concurrent: Maximum concurrent requests (default: 3)
+            
+        Returns:
+            Dict containing success/failure results and summary statistics
+        """
+        years = list(range(start_year, end_year + 1))
+        results = {
+            'successful_years': [],
+            'failed_years': [],
+            'errors': {},
+            'updated_tables': [],
+            'summary': {}
+        }
+        
+        # Create semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def update_single_year(year: int) -> Tuple[int, bool, Optional[str]]:
+            """Update a single year with error handling."""
+            async with semaphore:  # Limit concurrent requests
+                try:
+                    print(f"Starting update for {commodity} {year}...")
+                    
+                    # Use existing synchronous method but wrap in executor if needed
+                    # For now, we'll call the sync method in a thread pool
+                    loop = asyncio.get_event_loop()
+                    
+                    # Call the existing ESR_top_sources_update method
+                    result = await loop.run_in_executor(
+                        None, 
+                        lambda: self.ESR_top_sources_update(
+                            commodity=commodity, 
+                            market_year=year, 
+                            top_n=top_n,
+                            return_key=True
+                        )
+                    )
+                    
+                    if result is not None and not result.empty:
+                        print(f"✓ Successfully updated {commodity} {year} - {len(result)} records")
+                        return year, True, None
+                    else:
+                        error_msg = f"No data returned for {commodity} {year}"
+                        print(f"⚠ Warning: {error_msg}")
+                        return year, False, error_msg
+                        
+                except Exception as e:
+                    error_msg = f"Failed to update {commodity} {year}: {str(e)}"
+                    print(f"✗ Error: {error_msg}")
+                    return year, False, error_msg
+        
+        # Execute updates concurrently
+        print(f"Updating {commodity} data for years {start_year}-{end_year} (max {max_concurrent} concurrent)")
+        
+        try:
+            # Create tasks for all years
+            tasks = [update_single_year(year) for year in years]
+            
+            # Execute with progress tracking
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for result in completed_results:
+                if isinstance(result, Exception):
+                    error_year = "unknown"
+                    results['failed_years'].append(error_year)
+                    results['errors'][error_year] = str(result)
+                else:
+                    year, success, error_msg = result
+                    if success:
+                        results['successful_years'].append(year)
+                        results['updated_tables'].append(f"{commodity}/exports/{year}")
+                    else:
+                        results['failed_years'].append(year)
+                        if error_msg:
+                            results['errors'][year] = error_msg
+            
+            # Generate summary
+            total_years = len(years)
+            successful_count = len(results['successful_years'])
+            failed_count = len(results['failed_years'])
+            
+            results['summary'] = {
+                'commodity': commodity,
+                'year_range': f"{start_year}-{end_year}",
+                'total_years_requested': total_years,
+                'successful_updates': successful_count,
+                'failed_updates': failed_count,
+                'success_rate': f"{successful_count/total_years*100:.1f}%" if total_years > 0 else "0%",
+                'top_n_countries': top_n,
+                'max_concurrent_requests': max_concurrent
+            }
+            
+            print(f"\n📊 Update Summary for {commodity}:")
+            print(f"   Years requested: {total_years}")
+            print(f"   Successful: {successful_count}")
+            print(f"   Failed: {failed_count}")
+            print(f"   Success rate: {results['summary']['success_rate']}")
+            
+            if results['failed_years']:
+                print(f"   Failed years: {results['failed_years']}")
+            
+        except Exception as e:
+            error_msg = f"Critical error during multi-year update: {str(e)}"
+            print(f"💥 {error_msg}")
+            results['errors']['critical'] = error_msg
+            
+        return results
+
+    def update_esr_multi_year_sync(self, commodity: str, start_year: int, end_year: int, 
+                                  top_n: int = 10, max_concurrent: int = 3) -> Dict[str, any]:
+        """
+        Synchronous wrapper for the async multi-year update method.
+        
+        Args:
+            commodity: Commodity name
+            start_year: Starting marketing year
+            end_year: Ending marketing year
+            top_n: Number of top countries to update (default: 10)
+            max_concurrent: Maximum concurrent requests (default: 3)
+            
+        Returns:
+            Dict containing update results
+        """
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context, need to create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.ESR_multi_year_update(commodity, start_year, end_year, top_n, max_concurrent)
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.ESR_multi_year_update(commodity, start_year, end_year, top_n, max_concurrent)
+            )
+
+    def update_all_ESR(self, start_year, end_year, top_n=10, max_concurrent=3):
+        return
+
+

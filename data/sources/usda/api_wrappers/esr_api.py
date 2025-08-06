@@ -15,10 +15,14 @@ import pandas as pd
 from datetime import datetime, date
 from typing import Optional, Union, List, Dict, Any
 from urllib.parse import urljoin
+from dotenv import load_dotenv
 import json
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+import config
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 
 class USDAESRError(Exception):
@@ -26,8 +30,14 @@ class USDAESRError(Exception):
     pass
 
 
-class USDAESR:
 
+
+
+if not os.getenv('FAS_TOKEN', False):
+    load_dotenv(config.DOT_ENV)
+
+
+class USDAESR:
     """
     USDA Export Sales Report (ESR) API Wrapper
 
@@ -53,7 +63,7 @@ class USDAESR:
         )
     """
 
-    def __init__(self,api_key, base_url: str = "https://api.fas.usda.gov/api/esr"):
+    def __init__(self, base_url: str = "https://api.fas.usda.gov/api/esr"):
         """
         Initialize the USDA ESR API wrapper
 
@@ -61,12 +71,13 @@ class USDAESR:
             base_url (str): Base URL for the ESR API
         """
         self.base_url = base_url.rstrip('/')
+        self.api_key = os.getenv('FAS_TOKEN', config.FAS_TOKEN)  # Store API key as instance variable
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'USDA-ESR-Python-Wrapper/1.0',
             'Accept': 'application/json',
             'Content-Type': 'application/json',
-            'X-Api-Key': api_key
+            'X-Api-Key': self.api_key
         })
 
     def _make_request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -91,25 +102,25 @@ class USDAESR:
             if params.get('countryCode'):
                 req_path += f'/countryCode/{params.get("countryCode")}'
             elif params.get('regionCode'):
-                req_path+= f'/regionCode/{params.get("regionCode")}'
-            elif params.get('commodityCode') and params.get('marketYear'):
-                req_path += f'/allCountries'
+                req_path += f'/regionCode/{params.get("regionCode")}'
             if params.get('marketYear'):
                 req_path += f'/marketYear/{params.get("marketYear")}'
-            if url.endswith('/'):
-                url = url[:-1]
 
-        req_url = url+req_path
-
+        # Clean up URL construction
+        if url.endswith('/'):
+            url = url[:-1]
+        req_url = url + req_path
 
         try:
+            print(f"Making sync request to: {req_url}")  # Debug logging
             response = self.session.get(req_url)
+            print(f"Response status: {response.status_code}")  # Debug logging
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            raise USDAESRError(f"API request failed: {str(e)}")
+            raise USDAESRError(f"API request failed: {str(e)} for URL: {req_url}")
         except json.JSONDecodeError as e:
-            raise USDAESRError(f"Invalid JSON response: {str(e)}")
+            raise USDAESRError(f"Invalid JSON response: {str(e)} for URL: {req_url}")
 
     def get_commodities(self) -> pd.DataFrame:
         """
@@ -348,6 +359,206 @@ class USDAESR:
             return grouped
 
         return data
+
+    async def _make_request_async(self, session: aiohttp.ClientSession, endpoint: str,
+                                  params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Make an async request to the ESR API
+        
+        Args:
+            session: aiohttp ClientSession
+            endpoint: API endpoint
+            params: Query parameters
+            
+        Returns:
+            dict: JSON response from the API
+            
+        Raises:
+            USDAESRError: If the API request fails
+        """
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        req_path = str()
+
+        if params:
+            if params.get('commodityCode'):
+                req_path += f'/commodityCode/{params.get("commodityCode")}'
+            if params.get('countryCode'):
+                req_path += f'/countryCode/{params.get("countryCode")}'
+            elif params.get('regionCode'):
+                req_path += f'/regionCode/{params.get("regionCode")}'
+            if params.get('marketYear'):
+                req_path += f'/marketYear/{params.get("marketYear")}'
+
+        # Clean up URL construction
+        if url.endswith('/'):
+            url = url[:-1]
+        req_url = url + req_path
+
+        # Prepare headers for aiohttp (convert from requests session headers)
+        headers = {
+            'User-Agent': 'USDA-ESR-Python-Wrapper/1.0',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Api-Key': self.api_key
+        }
+
+        try:
+            print(f"Making async request to: {req_url}")  # Debug logging
+            async with session.get(req_url, headers=headers) as response:
+                print(f"Response status: {response.status}")  # Debug logging
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientError as e:
+            raise USDAESRError(f"API request failed: {str(e)} for URL: {req_url}")
+        except json.JSONDecodeError as e:
+            raise USDAESRError(f"Invalid JSON response: {str(e)} for URL: {req_url}")
+
+    async def get_export_sales_async(self,
+                                     session: aiohttp.ClientSession,
+                                     commodity_code: Optional[Union[int, List[int]]] = None,
+                                     country_code: Optional[Union[int, List[int]]] = None,
+                                     region_code: Optional[Union[int, List[int]]] = None,
+                                     market_year: Optional[Union[int, List[int]]] = None,
+                                     start_date: Optional[Union[str, date, datetime]] = None,
+                                     end_date: Optional[Union[str, date, datetime]] = None,
+                                     unit_id: Optional[int] = None) -> pd.DataFrame:
+        """
+        Async version of get_export_sales for concurrent requests
+        
+        Args:
+            session: aiohttp ClientSession for the request
+            commodity_code, country_code, etc.: Same as get_export_sales
+            
+        Returns:
+            pd.DataFrame: DataFrame containing export sales data
+        """
+        params = {}
+
+        # Handle commodity codes
+        if commodity_code is not None:
+            if isinstance(commodity_code, list):
+                params['commodityCode'] = ','.join(map(str, commodity_code))
+            else:
+                params['commodityCode'] = str(commodity_code)
+
+        # Handle country codes
+        if country_code is not None:
+            if isinstance(country_code, list):
+                params['countryCode'] = ','.join(map(str, country_code))
+            else:
+                params['countryCode'] = str(country_code)
+
+        # Handle region codes
+        if region_code is not None:
+            if isinstance(region_code, list):
+                params['regionCode'] = ','.join(map(str, region_code))
+            else:
+                params['regionCode'] = str(region_code)
+
+        # Handle marketing year
+        if market_year is not None:
+            if isinstance(market_year, list):
+                params['marketYear'] = ','.join(map(str, market_year))
+            else:
+                params['marketYear'] = str(market_year)
+
+        # Handle start date
+        if start_date is not None:
+            if isinstance(start_date, (date, datetime)):
+                params['startDate'] = start_date.strftime('%Y-%m-%d')
+            else:
+                params['startDate'] = str(start_date)
+
+        # Handle end date
+        if end_date is not None:
+            if isinstance(end_date, (date, datetime)):
+                params['endDate'] = end_date.strftime('%Y-%m-%d')
+            else:
+                params['endDate'] = str(end_date)
+
+        # Handle unit ID
+        if unit_id is not None:
+            params['unitId'] = str(unit_id)
+
+        # Make the async request - try common endpoint names
+        data = None
+        for endpoint in ['/exports', '/data', '/sales', '/']:
+            try:
+                data = await self._make_request_async(session, endpoint, params=params)
+                break
+            except USDAESRError:
+                continue
+
+        if data is None:
+            raise USDAESRError("Failed to retrieve data from any known endpoint")
+
+        df = pd.DataFrame(data)
+
+        # Convert date columns to datetime if they exist
+        date_columns = ['weekEndingDate', 'reportDate', 'date', 'week_ending_date']
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+
+        return df
+
+    async def get_multi_year_exports_async(self,
+                                           commodity_code: Union[int, List[int]],
+                                           years: List[int],
+                                           country_codes: Optional[List[int]] = None,
+                                           max_concurrent: int = 3) -> Dict[int, pd.DataFrame]:
+        """
+        Get export sales data for multiple years concurrently
+        
+        Args:
+            commodity_code: Commodity code(s)
+            years: List of marketing years to retrieve
+            country_codes: Optional list of country codes to filter
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dict mapping year to DataFrame of export data
+        """
+        results = {}
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def fetch_year_data(session: aiohttp.ClientSession, year: int) -> tuple[int, pd.DataFrame]:
+            """Fetch data for a single year with concurrency control"""
+            async with semaphore:
+                try:
+                    print(f"Fetching ESR data for year {year}...")
+                    data = await self.get_export_sales_async(
+                        session=session,
+                        commodity_code=commodity_code,
+                        country_code=country_codes,
+                        market_year=year
+                    )
+                    print(f"✓ Retrieved {len(data)} records for year {year}")
+                    return year, data
+                except Exception as e:
+                    print(f"✗ Failed to retrieve data for year {year}: {e}")
+                    return year, pd.DataFrame()  # Return empty DataFrame on error
+
+        # Create aiohttp session with proper timeout and connector settings
+        timeout = aiohttp.ClientTimeout(total=30)
+        connector = aiohttp.TCPConnector(limit=max_concurrent)
+
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            # Create tasks for all years
+            tasks = [fetch_year_data(session, year) for year in years]
+
+            # Execute concurrently
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results
+            for result in completed_results:
+                if isinstance(result, Exception):
+                    print(f"Task failed with exception: {result}")
+                else:
+                    year, data = result
+                    results[year] = data
+
+        return results
 
     def get_weekly_summary(self,
                            commodity_code: Optional[int] = None,
