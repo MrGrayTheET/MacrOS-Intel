@@ -345,6 +345,157 @@ import pandas as pd
 from typing import List, Dict, Any, Optional, Union
 from dash import html, dcc, Input, Output, State, dash, no_update, callback
 
+
+class FlexibleMenu:
+    """
+    Simple flexible menu that can be positioned left or right of the grid.
+    """
+
+    def __init__(self,
+                 menu_id: str,
+                 position: str = 'right',  # 'left' or 'right'
+                 width: str = '300px',
+                 title: str = 'Controls'):
+        """
+        Initialize the flexible menu.
+
+        Args:
+            menu_id: Unique identifier for the menu
+            position: 'left' or 'right'
+            width: Menu width
+            title: Menu title
+        """
+        self.menu_id = menu_id
+        self.position = position
+        self.width = width
+        self.title = title
+        self.components = []
+
+    def add_dropdown(self, component_id: str, label: str, options: List[Dict], value=None, multi=False):
+        """Add a dropdown component."""
+        self.components.append({
+            'type': 'dropdown',
+            'id': component_id,
+            'label': label,
+            'options': options,
+            'value': value,
+            'multi': multi
+        })
+        return self
+
+    def add_checklist(self, component_id: str, label: str, options: List[Dict], value=None):
+        """Add a checklist component."""
+        self.components.append({
+            'type': 'checklist',
+            'id': component_id,
+            'label': label,
+            'options': options,
+            'value': value or []
+        })
+        return self
+
+    def add_button(self, component_id: str, label: str, color='#4CAF50'):
+        """Add a button component."""
+        self.components.append({
+            'type': 'button',
+            'id': component_id,
+            'label': label,
+            'color': color
+        })
+        return self
+
+    def generate_menu_div(self) -> html.Div:
+        """Generate the menu div."""
+        menu_elements = []
+
+        # Title
+        menu_elements.append(
+            html.H3(self.title, style={
+                'textAlign': 'center',
+                'marginBottom': '20px',
+                'color': '#fff',
+                'borderBottom': '2px solid #fff',
+                'paddingBottom': '10px'
+            })
+        )
+
+        # Add components
+        for comp in self.components:
+            if comp['type'] == 'dropdown':
+                element = html.Div([
+                    html.Label(comp['label'], style={
+                        'fontWeight': 'bold',
+                        'marginBottom': '5px',
+                        'color': '#fff',
+                        'display': 'block'
+                    }),
+                    dcc.Dropdown(
+                        id=f"{self.menu_id}_{comp['id']}",
+                        options=comp['options'],
+                        value=comp['value'],
+                        multi=comp['multi'],
+                        style={'marginBottom': '15px'}
+                    )
+                ], style={'marginBottom': '20px'})
+
+            elif comp['type'] == 'checklist':
+                element = html.Div([
+                    html.Label(comp['label'], style={
+                        'fontWeight': 'bold',
+                        'marginBottom': '10px',
+                        'color': '#fff',
+                        'display': 'block'
+                    }),
+                    dcc.Checklist(
+                        id=f"{self.menu_id}_{comp['id']}",
+                        options=comp['options'],
+                        value=comp['value'],
+                        style={'color': '#fff'}
+                    )
+                ], style={'marginBottom': '20px'})
+
+            elif comp['type'] == 'button':
+                element = html.Div([
+                    html.Button(
+                        comp['label'],
+                        id=f"{self.menu_id}_{comp['id']}",
+                        n_clicks=0,
+                        style={
+                            'backgroundColor': comp['color'],
+                            'color': 'white',
+                            'border': 'none',
+                            'padding': '12px 20px',
+                            'borderRadius': '5px',
+                            'cursor': 'pointer',
+                            'width': '100%',
+                            'fontSize': '14px',
+                            'fontWeight': 'bold'
+                        }
+                    )
+                ], style={'marginBottom': '15px'})
+
+            menu_elements.append(element)
+
+        return html.Div(
+            menu_elements,
+            style={
+                'width': self.width,
+                'padding': '20px',
+                'backgroundColor': '#1a1a2e',
+                'border': '1px solid #333',
+                'borderRadius': '5px',
+                'boxSizing': 'border-box',
+                'color': '#fff',
+                'overflowY': 'auto',
+                'height': '100vh'
+            }
+        )
+
+    def get_component_ids(self) -> Dict[str, str]:
+        """Get all component IDs for callback registration."""
+        return {comp['id']: f"{self.menu_id}_{comp['id']}" for comp in self.components}
+
+
 class FrameGrid:
     """
     A layout manager for arranging multiple FundamentalFrame and MarketFrame instances in a grid.
@@ -369,6 +520,7 @@ class FrameGrid:
         """
         self.frames = frames
         self.container_id = container_id
+
 
         # Default configurations (existing code unchanged)
         default_grid_config = {
@@ -1306,6 +1458,164 @@ class FrameGrid:
         else:
             raise IndexError(f"Frame index {frame_index} out of range")
 
+
+class EnhancedFrameGrid:
+    """
+    Enhanced FrameGrid with flexible menu and direct chart targeting.
+    """
+
+    def __init__(self, frames, flexible_menu: FlexibleMenu = None):
+        """Initialize enhanced frame grid."""
+        self.frames = frames
+        self.flexible_menu = flexible_menu
+
+        # Build chart registry for direct targeting
+        self.chart_registry = self._build_chart_registry()
+
+    def _build_chart_registry(self):
+        """Build registry of all chart_ids and their objects."""
+        registry = {}
+        for frame_idx, frame in enumerate(self.frames):
+            if hasattr(frame, 'charts'):
+                for chart_idx, chart in enumerate(frame.charts):
+                    registry[chart.chart_id] = {
+                        'chart_object': chart,
+                        'frame_index': frame_idx,
+                        'chart_index': chart_idx
+                    }
+        return registry
+
+    def generate_layout_with_menu(self, title: str = "Dashboard") -> html.Div:
+        """Generate layout with menu positioned left or right."""
+
+        # Create grid content
+        grid_content = self._create_grid_content()
+
+        if not self.flexible_menu:
+            return html.Div([
+                html.H1(title, style={'textAlign': 'center', 'color': '#fff', 'marginBottom': '30px'}),
+                grid_content
+            ], style={'backgroundColor': '#0f0f0f', 'minHeight': '100vh', 'padding': '20px'})
+
+        # Create menu
+        menu_div = self.flexible_menu.generate_menu_div()
+
+        # Layout based on menu position
+        if self.flexible_menu.position == 'left':
+            layout_children = [
+                html.Div(menu_div, style={'flexShrink': '0', 'marginRight': '20px'}),
+                html.Div(grid_content, style={'flex': '1'})
+            ]
+        else:  # right
+            layout_children = [
+                html.Div(grid_content, style={'flex': '1', 'marginRight': '20px'}),
+                html.Div(menu_div, style={'flexShrink': '0'})
+            ]
+
+        return html.Div([
+            html.H1(title, style={'textAlign': 'center', 'color': '#fff', 'marginBottom': '30px'}),
+            html.Div(layout_children, style={'display': 'flex', 'height': 'calc(100vh - 120px)'})
+        ], style={'backgroundColor': '#0f0f0f', 'minHeight': '100vh', 'padding': '20px'})
+
+    def _create_grid_content(self) -> html.Div:
+        """Create the grid content."""
+        frame_items = []
+
+        for i, frame in enumerate(self.frames):
+            frame_layout = frame.generate_layout_div()
+
+            frame_item = html.Div([
+                html.H3(f'Frame {i + 1}', style={'color': '#fff', 'textAlign': 'center', 'marginBottom': '15px'}),
+                frame_layout
+            ], style={
+                'border': '1px solid #333',
+                'borderRadius': '5px',
+                'padding': '15px',
+                'margin': '10px',
+                'backgroundColor': '#1a1a2e',
+                'minHeight': '400px'
+            })
+
+            frame_items.append(frame_item)
+
+        return html.Div(frame_items, style={
+            'display': 'grid',
+            'gridTemplateColumns': 'repeat(auto-fit, minmax(600px, 1fr))',
+            'gap': '20px',
+            'height': '100%'
+        })
+
+    def create_menu_callbacks(self, app, update_function):
+        """
+        Create callbacks for menu interactions.
+
+        Args:
+            app: Dash app instance
+            update_function: Function that takes (chart_id, **menu_values) and returns updated figure
+        """
+        if not self.flexible_menu:
+            return
+
+        component_ids = self.flexible_menu.get_component_ids()
+
+        # Get all chart outputs
+        chart_outputs = []
+        chart_ids = []
+        for chart_id in self.chart_registry.keys():
+            chart_outputs.append(Output(chart_id, 'figure'))
+            chart_ids.append(chart_id)
+
+        if not chart_outputs:
+            return
+
+        # Find button inputs and other states
+        inputs = []
+        states = []
+
+        for comp_id, full_id in component_ids.items():
+            comp_info = next((c for c in self.flexible_menu.components if c['id'] == comp_id), None)
+            if comp_info:
+                if comp_info['type'] == 'button':
+                    inputs.append(Input(full_id, 'n_clicks'))
+                else:
+                    states.append(State(full_id, 'value'))
+
+        if not inputs:
+            return
+
+        @app.callback(
+            chart_outputs,
+            inputs,
+            states,
+            prevent_initial_call=True
+        )
+        def update_charts_from_menu(n_clicks, *state_values):
+            """Update charts based on menu selections."""
+            if not n_clicks:
+                return [no_update] * len(chart_outputs)
+
+            # Create menu values dict
+            menu_values = {}
+            state_idx = 0
+
+            for comp_id, full_id in component_ids.items():
+                comp_info = next((c for c in self.flexible_menu.components if c['id'] == comp_id), None)
+                if comp_info and comp_info['type'] != 'button':
+                    if state_idx < len(state_values):
+                        menu_values[comp_id] = state_values[state_idx]
+                        state_idx += 1
+
+            # Update each chart
+            updated_figures = []
+            for chart_id in chart_ids:
+                try:
+                    updated_figure = update_function(chart_id, **menu_values)
+                    updated_figures.append(updated_figure)
+                except Exception as e:
+                    print(f"Error updating chart {chart_id}: {e}")
+                    updated_figures.append(no_update)
+
+            return updated_figures
 
 
 # Enhanced configuration examples

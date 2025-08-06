@@ -1,11 +1,13 @@
 import pandas as pd
-from dash import Output, Input, html
+from dash import html
 from plotly import graph_objects as go, express as px
-from utils.data_tools import store_to_df, df_to_store
 
+from components.frames import FrameGrid
+from utils.data_tools import store_to_df, df_to_store, get_sample_data, get_multi_year_sample_data, create_empty_figure
 from data.data_tables import TableClient
-from dash import Input, Output, callback
+from dash import Input, Output
 import dash
+
 
 
 class import_export_callbacks:
@@ -16,6 +18,18 @@ class import_export_callbacks:
 
     def register_callbacks(self, app):
         table_client = self.table_client
+        @app.callback(Output('commodity-dropdown', 'options'),
+                      Output('commodity-dropdown', 'value'),
+                      Input('data-key-type', 'data'))
+
+        def update_dropdown(key_type):
+            data_type = key_type['key-type']
+            all_keys = table_client.available_keys()
+            data_options = []
+            available_keys = [key for key in all_keys if key.endswith(data_type)]
+            for key in available_keys:
+                data_options.append({'label':key.split('/')[0], 'value':key.split('/')[0]})
+            return data_options, data_options[0]['value']
 
         @app.callback(
             [Output('trade-data', 'data'),
@@ -307,4 +321,269 @@ class import_export_callbacks:
                     ], className="four columns")
                 ], className="row")
             ])
+
+def register_psd_callbacks(Fgrid:FrameGrid, component_ids:dict, FAS_table):
+    app = dash.get_app()
+    output_charts = []
+    for frame in Fgrid.frames:
+        output_charts.extend(frame.charts)
+
+    @app.callback([Output(chart.chart_id, 'figure') for chart in output_charts],
+                  Input(component_ids['dd'], 'value'),
+                  Input(component_ids['load-btn'], 'n_clicks')
+                  )
+    def get_psd_figures(key, n_clicks):
+        commodity = key.split('/')[0]
+        if n_clicks:
+            df = FAS_table[key]
+            update_columns = ['Exports', 'Imports', 'Production', 'Domestic Consumption', 'Beginning Stocks',
+                              'Ending Stocks']
+            charts = []
+            for frame in Fgrid.frames:
+                charts.extend(frame.charts)
+            new_figures = []
+            for n in range(len(charts)):
+                if hasattr(charts[n], 'title'):
+                    charts[
+                        n].title = f'{FAS_table.esr_codes["alias"][commodity.lower()].capitalize()} {update_columns[n]}'
+
+                new_figures.append(
+                    charts[n].update_data_source(df, y_column=update_columns[n])
+                )
+
+            return new_figures
+
+def create_esr_chart_update_functions(app_instance):
+    """
+    Create chart update functions with access to the app's data storage.
+
+    Args:
+        app_instance: The ESRAnalysisApp instance
+
+    Returns:
+        dict: Dictionary of update functions for each page
+    """
+    def sales_trends_chart_update(chart_id: str, **menu_values):
+        """Update function for Sales Trends page - each chart gets its specific metric."""
+        commodity = menu_values.get('commodity', 'cattle')
+        countries = menu_values.get('countries', ['Korea, South', 'Japan', 'China'])
+
+        # Get data
+        current_year = pd.Timestamp.now().year
+        data = get_sample_data(commodity, current_year, countries)
+
+        # Filter by selected countries
+        if countries:
+            data = data[data['country'].isin(countries)]
+
+        if data.empty:
+            return create_empty_figure(f"{commodity.title()} - Sales Trends")
+
+        # EXPLICIT CHART-TO-METRIC MAPPING
+        if chart_id == 'sales_trends_chart_0':
+            metric = 'weeklyExports'
+            metric_name = 'Weekly Exports'
+        elif chart_id == 'sales_trends_chart_1':
+            metric = 'outstandingSales'
+            metric_name = 'Outstanding Sales'
+        elif chart_id == 'sales_trends_chart_2':
+            metric = 'grossNewSales'
+            metric_name = 'Gross New Sales'
+        else:
+            metric = 'weeklyExports'  # fallback
+            metric_name = 'Weekly Exports'
+
+        # Create chart with the SPECIFIC metric
+        fig = px.line(
+            data,
+            x='weekEndingDate',
+            y=metric,  # This is the key - use the specific metric
+            color='country',
+            title=f"{commodity.title()} - {metric_name}",
+            markers=True
+        )
+
+        fig.update_layout(
+            height=400,
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        return fig
+
+    def country_analysis_chart_update(chart_id: str, **menu_values):
+        """Update function for Country Analysis page - multi-year, single country."""
+        commodity = menu_values.get('commodity', 'cattle')
+        country = menu_values.get('country', 'Korea, South')
+
+        # Get multi-year data
+        data = get_multi_year_sample_data(commodity, country)
+
+        # Filter by selected country
+        data = data[data['country'] == country]
+
+        if data.empty:
+            return create_empty_figure(f"{commodity.title()} - {country} Analysis")
+
+        # EXPLICIT CHART-TO-METRIC MAPPING
+        if chart_id == 'country_analysis_chart_0':
+            metric = 'weeklyExports'
+            metric_name = 'Weekly Exports'
+        elif chart_id == 'country_analysis_chart_1':
+            metric = 'outstandingSales'
+            metric_name = 'Outstanding Sales'
+        else:
+            metric = 'weeklyExports'  # fallback
+            metric_name = 'Weekly Exports'
+
+        # Create chart colored by marketing year
+        fig = px.line(
+            data,
+            x='weekEndingDate',
+            y=metric,  # Use the specific metric
+            color='marketing_year',
+            title=f"{commodity.title()} - {country} {metric_name} (5-Year)",
+            markers=True
+        )
+
+        fig.update_layout(
+            height=450,
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        return fig
+
+    def commitment_analysis_chart_update(chart_id: str, **menu_values):
+        """Update function for Commitment Analysis page - each chart gets its specific commitment metric and chart type."""
+        commodity = menu_values.get('commodity', 'cattle')
+        year = menu_values.get('year', pd.Timestamp.now().year)
+        countries = menu_values.get('countries', ['Korea, South', 'Japan', 'China'])
+
+        # Get data
+        data = get_sample_data(commodity, year, countries)
+
+        # Filter by selected countries
+        if countries:
+            data = data[data['country'].isin(countries)]
+
+        if data.empty:
+            return create_empty_figure(f"{commodity.title()} - Commitment Analysis (MY {year})")
+
+        # EXPLICIT CHART-TO-METRIC AND CHART-TYPE MAPPING FOR COMMITMENT METRICS
+        if chart_id == 'commitment_analysis_chart_0':
+            metric = 'currentMYTotalCommitment'
+            metric_name = 'Current MY Total Commitment'
+            chart_type = 'area'
+        elif chart_id == 'commitment_analysis_chart_1':
+            metric = 'currentMYNetSales'
+            metric_name = 'Current MY Net Sales'
+            chart_type = 'line'
+        elif chart_id == 'commitment_analysis_chart_2':
+            metric = 'nextMYOutstandingSales'
+            metric_name = 'Next MY Outstanding Sales'
+            chart_type = 'bar'
+        elif chart_id == 'commitment_analysis_chart_3':
+            metric = 'nextMYNetSales'
+            metric_name = 'Next MY Net Sales'
+            chart_type = 'line'
+        else:
+            metric = 'currentMYTotalCommitment'  # fallback
+            metric_name = 'Current MY Total Commitment'
+            chart_type = 'area'
+
+        # Create chart based on the specified chart type
+        if chart_type == 'area':
+            fig = px.area(
+                data,
+                x='weekEndingDate',
+                y=metric,
+                color='country',
+                title=f"{commodity.title()} - {metric_name} (MY {year})"
+            )
+        elif chart_type == 'bar':
+            fig = px.bar(
+                data,
+                x='weekEndingDate',
+                y=metric,
+                color='country',
+                title=f"{commodity.title()} - {metric_name} (MY {year})"
+            )
+        else:  # line chart
+            fig = px.line(
+                data,
+                x='weekEndingDate',
+                y=metric,
+                color='country',
+                title=f"{commodity.title()} - {metric_name} (MY {year})",
+                markers=True
+            )
+
+        fig.update_layout(
+            height=400,
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        return fig
+
+    def comparative_analysis_chart_update(chart_id: str, **menu_values):
+        """Update function for Comparative Analysis page - different commodities, user-selected metric."""
+        commodity_a = menu_values.get('commodity_a', 'cattle')
+        commodity_b = menu_values.get('commodity_b', 'corn')
+        year = menu_values.get('year', pd.Timestamp.now().year)
+        metric = menu_values.get('metric', 'weeklyExports')  # User selects this
+        countries = menu_values.get('countries', ['Korea, South', 'Japan', 'China'])
+
+        # Determine which commodity based on frame
+        if 'comparison_frame1' in chart_id:
+            commodity = commodity_a
+            frame_label = "A"
+        else:
+            commodity = commodity_b
+            frame_label = "B"
+
+        # Get data for the specific commodity
+        data = get_sample_data(commodity, year, countries)
+
+        # Filter by selected countries
+        if countries:
+            data = data[data['country'].isin(countries)]
+
+        if data.empty:
+            return create_empty_figure(f"Commodity {frame_label}: {commodity.title()}")
+
+        # Use the metric selected by the user in the menu
+        metric_name = {
+            'weeklyExports': 'Weekly Exports',
+            'outstandingSales': 'Outstanding Sales',
+            'grossNewSales': 'Gross New Sales',
+            'currentMYNetSales': 'Current MY Net Sales'
+        }.get(metric, metric.replace('_', ' ').title())
+
+        # Create chart with countries colored automatically
+        fig = px.line(
+            data,
+            x='weekEndingDate',
+            y=metric,  # Use the user-selected metric
+            color='country',
+            title=f"Commodity {frame_label}: {commodity.title()} - {metric_name} (MY {year})",
+            markers=True
+        )
+
+        fig.update_layout(
+            height=350,
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        return fig
+
+    return {
+        'sales_trends': sales_trends_chart_update,
+        'country_analysis': country_analysis_chart_update,
+        'commitment_analysis': commitment_analysis_chart_update,
+        'comparative_analysis': comparative_analysis_chart_update
+    }
+
 

@@ -6,6 +6,7 @@ import os
 import sys
 from  dotenv import load_dotenv
 from pathlib import Path
+from callbacks.esr import register_esr_callbacks
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -30,27 +31,28 @@ navbar = dbc.NavbarSimple(
     color="dark",
     dark=True,
     children=[
-        dbc.NavItem(dbc.NavLink(id='psd-data-link', href="/psd_data")),
-        dbc.NavItem(dbc.NavLink(id='trade-bal-link', href="/trade_bal/imports")),
+        dbc.NavItem(dbc.NavLink("PSD Data",id='psd-data-link', href="/psd_data")),
+        dbc.NavItem(dbc.NavLink("Trade Imports", id='trade-bal-link', href="/trade_bal/imports")),
+        dbc.NavItem(dbc.NavLink("Export Sales Reporting",id='esr-link', href="/esr/sales_trends")),
     ]
 )
 
 from pages import trade_bal
 from pages.agricultural import psd_data
+from pages.esr import *
+from pages.esr import home
 
 # Main layout
 app.layout = html.Div([
     dcc.Location(id="url"),
     dcc.Store(id='commodity-state'),
     navbar,
-    html.Div(
+    html.Div(id='content-div',children=
         page_container,
         className="p-4"
     )
 ])
-
-@app.callback(Input('url', 'value'),
-              Output())
+register_esr_callbacks(app)
 
 if __name__ == "__main__":
     app.run(debug=True)

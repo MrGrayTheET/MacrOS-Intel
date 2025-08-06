@@ -43,13 +43,15 @@ table_client = FASTable()
 
 # Initialize the Dash app
 dash.register_page(__name__, path_template='/trade_bal/<data_type>')
-app = dash.get_app()
+main_app = dash.get_app()
 
 
 def layout(data_type=None, **kwargs):
     if not data_type:
         return html.Div('Invalid trade type (select imports or exports)')
     else:
-        return import_export_layout(data_type),
+        return import_export_layout(data_type)
+
+import_export_callbacks(table_client).register_callbacks(main_app)
 
 

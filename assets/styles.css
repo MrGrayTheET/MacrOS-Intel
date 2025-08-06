@@ -67,9 +67,9 @@ body, html {
 }
 
 .navbar button {
-    background: transparent;
+    background: solid;
     border: 1px solid var(--text-primary);
-    color: var(--text-primary);
+    color: var(--bg-primary);
     padding: 8px 16px;
     border-radius: 5px;
     cursor: pointer;
