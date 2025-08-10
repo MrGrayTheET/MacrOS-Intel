@@ -46,6 +46,8 @@ try:
     from data.sources.usda.nass_utils import calc_dates, clean_numeric_column as clean_col, clean_fas
     from data.sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict, rev_lookup, valid_codes, code_lookup
     from data.sources.usda.api_wrappers.esr_api import USDAESR
+    from data.sources.usda.api_wrappers.esr_staging_api import USDAESRStaging
+    from data.sources.usda.esr_csv_processor import ESRCSVProcessor, process_esr_csv
 except ImportError as e:
     print(f"Warning: Could not import USDA modules: {e}")
     # Provide None or mock objects
@@ -54,6 +56,9 @@ except ImportError as e:
     clean_fas = None
     PSD_API = None
     USDAESR = None
+    USDAESRStaging = None
+    ESRCSVProcessor = None
+    process_esr_csv = None
 
 # Import utilities
 try:
@@ -330,6 +335,7 @@ class TableClient:
             return self.get_keys(item, use_prefix=True, use_simple_name=self.rename)
         elif isinstance(item, str):
             return self.get_key(item, use_prefix=True, use_simple_name=self.rename)
+
 
 
 class MarketTable:
@@ -830,15 +836,84 @@ class ESRTableClient(FASTable):
         for year in years:
             year_data = self.get_esr_data(commodity, year, country)
             if not year_data.empty:
+                # Standardize column names - some years have different column structures
+                year_data = self._standardize_esr_columns(year_data, year)
                 year_data['marketing_year'] = year
                 all_data.append(year_data)
 
         if all_data:
             combined_data = pd.concat(all_data, ignore_index=True)
-            combined_data = combined_data.sort_values(['marketing_year', 'weekEndingDate'])
+            # Only sort by weekEndingDate if it exists
+            if 'weekEndingDate' in combined_data.columns:
+                combined_data = combined_data.sort_values(['marketing_year', 'weekEndingDate'])
+            else:
+                combined_data = combined_data.sort_values(['marketing_year'])
             return combined_data
 
         return pd.DataFrame()
+
+    def _standardize_esr_columns(self, data: pd.DataFrame, year: int) -> pd.DataFrame:
+        """
+        Standardize ESR column names and fix unit scaling issues across different years.
+        
+        Some years may have different column naming conventions (e.g., '2025_exports' 
+        instead of 'weekEndingDate') and different unit scaling (grains may have 1000x scaling differences).
+        
+        Args:
+            data: DataFrame to standardize
+            year: Year of the data for context
+            
+        Returns:
+            DataFrame with standardized column names and units
+        """
+        data = data.copy()
+        
+        # Check for year-specific date columns (like '2025_exports', '2024_exports')
+        year_column = f"{year}_exports"
+        if year_column in data.columns and 'weekEndingDate' not in data.columns:
+            # Rename the year column to weekEndingDate
+            data = data.rename(columns={year_column: 'weekEndingDate'})
+            print(f"Standardized column '{year_column}' to 'weekEndingDate' for {year} data")
+        
+        # Ensure weekEndingDate is properly formatted as datetime
+        if 'weekEndingDate' in data.columns:
+            try:
+                data['weekEndingDate'] = pd.to_datetime(data['weekEndingDate'])
+            except Exception as e:
+                print(f"Warning: Could not convert weekEndingDate to datetime for {year}: {e}")
+        
+        # Fix unit scaling issues for grains
+        if 'commodity' in data.columns:
+            commodity = data['commodity'].iloc[0].lower() if not data.empty else ''
+            # Grains (corn, wheat, soybeans) sometimes have 1000x scaling differences between years
+            grain_commodities = ['corn', 'wheat', 'soybeans']
+            
+            if any(grain in commodity for grain in grain_commodities):
+                # Check if this year's data appears to be in wrong units (too large values)
+                numeric_columns = ['weeklyExports', 'outstandingSales', 'grossNewSales', 
+                                 'currentMYNetSales', 'currentMYTotalCommitment', 
+                                 'nextMYOutstandingSales', 'nextMYNetSales', 'accumulatedExports']
+                
+                for col in numeric_columns:
+                    if col in data.columns:
+                        # Check if values are abnormally high (indicating wrong units)
+                        mean_value = data[col].mean()
+                        max_value = data[col].max()
+                        
+                        # If mean > 1000 or max > 100000, likely needs scaling down by 1000
+                        if mean_value > 1000 or max_value > 100000:
+                            data[col] = data[col] / 1000.0
+                            print(f"Applied 1000x scaling correction to {col} for {commodity} {year} data")
+        
+        # Remove any duplicate date columns that might exist
+        date_like_columns = [col for col in data.columns if 'exports' in col and col != 'weekEndingDate']
+        for col in date_like_columns:
+            if col in data.columns and 'weekEndingDate' in data.columns:
+                # If we already have weekEndingDate, drop the redundant column
+                data = data.drop(columns=[col])
+                print(f"Removed redundant date column '{col}' from {year} data")
+        
+        return data
 
     def get_available_commodities(self):
         """Get list of available commodities in ESR data."""
@@ -860,9 +935,9 @@ class ESRTableClient(FASTable):
         years = set()
 
         for key in available_keys:
-            if f"/{commodity}/exports/" in key:
+            if f"{commodity}/exports/" in key:
                 parts = key.split('/')
-                if len(parts) >= 4 and parts[-1].isdigit():
+                if len(parts) >= 3 and parts[-1].isdigit():
                     years.add(int(parts[-1]))
 
         return sorted(list(years))
@@ -907,6 +982,110 @@ class ESRTableClient(FASTable):
         except Exception as e:
             print(f"Error getting top countries: {e}")
             return []
+
+    def get_commitment_vs_shipment_analysis(self, commodity, start_year=None, end_year=None, countries=None):
+        """
+        Get commitment vs shipment analysis using ESRAnalyzer.
+        
+        Args:
+            commodity: Commodity name
+            start_year: Start year for analysis
+            end_year: End year for analysis 
+            countries: List of countries to include (optional)
+            
+        Returns:
+            Dict with analysis results including 'data' key with processed DataFrame
+        """
+        try:
+            from models.commodity_analytics import ESRAnalyzer
+            
+            # Get multi-year data
+            data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
+            
+            if data.empty:
+                return {'error': 'no_data'}
+            
+            # Filter by countries if specified
+            if countries:
+                data = data[data['country'].isin(countries)]
+            
+            # Determine commodity type for analyzer
+            grain_commodities = ['corn', 'wheat', 'soybeans']
+            oilseed_commodities = ['soybeans']  # soybeans can be both
+            livestock_commodities = ['cattle', 'hogs', 'pork']
+            
+            if commodity.lower() in grain_commodities:
+                commodity_type = 'grains'
+            elif commodity.lower() in livestock_commodities:
+                commodity_type = 'livestock'
+            else:
+                commodity_type = 'grains'  # default
+            
+            # Initialize ESR analyzer
+            analyzer = ESRAnalyzer(data.set_index('weekEndingDate'), commodity_type)
+            
+            # Run commitment vs shipment analysis
+            results = analyzer.commitment_vs_shipment_analysis()
+            
+            return results
+            
+        except Exception as e:
+            print(f"Error in commitment vs shipment analysis: {e}")
+            return {'error': str(e)}
+    
+    def get_seasonal_patterns_analysis(self, commodity, metric='weeklyExports', start_year=None, end_year=None, countries=None):
+        """
+        Get seasonal patterns analysis using ESRAnalyzer.
+        
+        Args:
+            commodity: Commodity name
+            metric: ESR metric to analyze for seasonality
+            start_year: Start year for analysis
+            end_year: End year for analysis
+            countries: List of countries to include (optional)
+            
+        Returns:
+            Dict with seasonal analysis results including processed data
+        """
+        try:
+            from models.commodity_analytics import ESRAnalyzer
+            
+            # Get multi-year data
+            data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
+            
+            if data.empty:
+                return {'error': 'no_data'}
+            
+            # Filter by countries if specified
+            if countries:
+                data = data[data['country'].isin(countries)]
+            
+            # Determine commodity type
+            grain_commodities = ['corn', 'wheat', 'soybeans']
+            livestock_commodities = ['cattle', 'hogs', 'pork']
+            
+            if commodity.lower() in grain_commodities:
+                commodity_type = 'grains'
+            elif commodity.lower() in livestock_commodities:
+                commodity_type = 'livestock'
+            else:
+                commodity_type = 'grains'
+            
+            # Initialize ESR analyzer
+            analyzer = ESRAnalyzer(data.set_index('weekEndingDate'), commodity_type)
+            
+            # Run seasonal analysis
+            seasonal_results = analyzer.analyze_seasonal_patterns(metric)
+            
+            # Add the original data with marketing year week for plotting
+            analysis_data = analyzer.data.copy()
+            seasonal_results['data'] = analysis_data.reset_index()
+            
+            return seasonal_results
+            
+        except Exception as e:
+            print(f"Error in seasonal patterns analysis: {e}")
+            return {'error': str(e)}
 
     def aggregate_esr_data(self, data, group_by='country', time_period='weekly'):
         """
@@ -1112,7 +1291,342 @@ class ESRTableClient(FASTable):
                 self.ESR_multi_year_update(commodity, start_year, end_year, top_n, max_concurrent)
             )
 
-    def update_all_ESR(self, start_year, end_year, top_n=10, max_concurrent=3):
-        return
 
+    def update_esr(self,data :pd.DataFrame, commodity:str,year:int):
+        if commodity.lower() in self.esr_codes['alias'].keys():
+            # Get the commodity name from the alias (cattle -> beef, hogs -> pork, etc.)
+            commodity_name = self.esr_codes['alias'][commodity.lower()]
+            # Get the commodity code from the commodity name (beef -> 1701, pork -> 1702, etc.)
+            commodity_code = self.esr_codes['commodities'][commodity_name]
+            table_name = commodity.lower()
+        else:
+            # Fallback: assume commodity is already the commodity name (beef, pork, etc.)
+            commodity_code = self.esr_codes['commodities'].get(commodity.lower())
+            if not commodity_code:
+                raise ValueError(f"Unknown commodity: {commodity}. Available: {list(self.esr_codes['alias'].keys())}")
+
+            table_name = commodity.lower()
+        if not data.empty:
+            data.to_hdf(self.table_db, key=f"{commodity}/exports/{year}")
+            print(f'Data Successfully updated to table {commodity}/exports/{year}')
+            return True
+        else:
+            return False
+
+    def update_esr_from_csv(self, csv_file_path: str, target_year: int = None, 
+                           validate: bool = True) -> Dict[str, any]:
+        """
+        Update ESR export data from a downloaded CSV file that may contain multiple commodities.
+        
+        This method processes a raw ESR CSV download, detects all commodities present,
+        cleans the data to standard format, and updates the appropriate 
+        {commodity}/exports/{year} tables for each commodity found.
+        
+        Args:
+            csv_file_path (str): Path to the raw ESR CSV file
+            target_year (int, optional): Marketing year (auto-detected if None)  
+            validate (bool): Whether to validate data before updating (default True)
+            
+        Returns:
+            Dict containing update results for all commodities processed
+            
+        Example:
+            result = client.update_esr_from_csv("esr_mixed_2025.csv")
+            for commodity, commodity_result in result['commodities'].items():
+                print(f"Updated {commodity}: {commodity_result['records_count']} records")
+        """
+        if not process_esr_csv:
+            raise ImportError("ESR CSV processor not available. Check imports.")
+            
+        try:
+            print(f"🔄 Processing multi-commodity ESR CSV: {csv_file_path}")
+            
+            # Read the raw CSV to detect commodities
+            raw_df = pd.read_csv(csv_file_path)
+            print(f"📊 Raw data shape: {raw_df.shape}")
+            
+            # Detect all commodities in the file
+            detected_commodities = self._detect_all_commodities(raw_df)
+            print(f"🎯 Detected commodities: {detected_commodities}")
+            
+            if not detected_commodities:
+                raise ValueError("No recognizable commodities found in CSV file")
+            
+            # Process each commodity separately
+            commodity_results = {}
+            overall_success = True
+            total_records = 0
+            
+            for commodity in detected_commodities:
+                print(f"\n📦 Processing commodity: {commodity}")
+                
+                try:
+                    # Filter data for this specific commodity
+                    commodity_data = self._filter_csv_by_commodity(raw_df, commodity)
+                    
+                    if commodity_data.empty:
+                        print(f"⚠️  No data found for {commodity}")
+                        continue
+                    
+                    # Process and clean the commodity-specific data
+                    processor = ESRCSVProcessor()
+                    cleaned_data = processor._transform_raw_data(commodity_data, commodity)
+                    
+                    # Extract year from the data
+                    detected_year = processor.extract_year_from_data(cleaned_data)
+                    final_year = target_year if target_year is not None else detected_year
+                    
+                    print(f"📈 {commodity}: {len(cleaned_data)} records for year {final_year}")
+                    
+                    # Validate data if requested
+                    validation_issues = []
+                    if validate:
+                        is_valid, issues = processor.validate_data(cleaned_data)
+                        validation_issues = issues
+                        
+                        if not is_valid:
+                            print(f"⚠️  Validation warnings for {commodity}:")
+                            for issue in issues:
+                                print(f"    - {issue}")
+                    
+                    # Update the data table for this commodity
+                    update_success = self.update_esr(cleaned_data, commodity, final_year)
+                    
+                    # Store results for this commodity
+                    commodity_results[commodity] = {
+                        'success': update_success,
+                        'commodity': commodity,
+                        'year': final_year,
+                        'records_count': len(cleaned_data),
+                        'countries_count': cleaned_data['country'].nunique() if not cleaned_data.empty else 0,
+                        'date_range': {
+                            'start': cleaned_data['weekEndingDate'].min().strftime('%Y-%m-%d') if not cleaned_data.empty else None,
+                            'end': cleaned_data['weekEndingDate'].max().strftime('%Y-%m-%d') if not cleaned_data.empty else None
+                        },
+                        'validation_issues': validation_issues,
+                        'table_key': f"{commodity}/exports/{final_year}"
+                    }
+                    
+                    if update_success:
+                        print(f"✅ Successfully updated {commodity} data for {final_year}")
+                        total_records += len(cleaned_data)
+                    else:
+                        print(f"❌ Failed to update {commodity} data for {final_year}")
+                        overall_success = False
+                        
+                except Exception as e:
+                    print(f"❌ Error processing {commodity}: {e}")
+                    commodity_results[commodity] = {
+                        'success': False,
+                        'error': str(e),
+                        'commodity': commodity
+                    }
+                    overall_success = False
+            
+            # Prepare overall results
+            successful_commodities = [c for c, r in commodity_results.items() if r.get('success', False)]
+            failed_commodities = [c for c, r in commodity_results.items() if not r.get('success', False)]
+            
+            result = {
+                'overall_success': overall_success,
+                'total_commodities': len(detected_commodities),
+                'successful_commodities': successful_commodities,
+                'failed_commodities': failed_commodities,
+                'total_records_processed': total_records,
+                'commodities': commodity_results,
+                'file_processed': csv_file_path
+            }
+            
+            print(f"\n🎯 Multi-commodity update completed:")
+            print(f"   - Total commodities: {len(detected_commodities)}")
+            print(f"   - Successful: {len(successful_commodities)}")
+            print(f"   - Failed: {len(failed_commodities)}")
+            print(f"   - Total records: {total_records}")
+            
+            return result
+            
+        except Exception as e:
+            error_result = {
+                'overall_success': False,
+                'error': str(e),
+                'total_commodities': 0,
+                'commodities': {},
+                'file_processed': csv_file_path
+            }
+            print(f"❌ Error updating ESR from CSV: {e}")
+            return error_result
+
+    def _detect_all_commodities(self, raw_df: pd.DataFrame) -> List[str]:
+        """
+        Detect all commodities present in the raw CSV data.
+        
+        Args:
+            raw_df: Raw DataFrame from CSV
+            
+        Returns:
+            List of commodity names found in the data
+        """
+        commodities = set()
+        
+        if 'Commodity' in raw_df.columns:
+            # Map raw commodity names to our internal names
+            commodity_mapping = {
+                'ALL WHEAT': 'wheat',
+                'WHEAT': 'wheat', 
+                'CORN': 'corn',
+                'CORN - UNMILLED':'corn',
+                'SOYBEANS': 'soybeans',
+                'FRESH, CHILLED, OR FROZEN MUSCLE CUTS OF BEEF': 'cattle',
+                'CATTLE': 'cattle',
+                'FRESH, CHILLED, OR FROZEN MUSCLE CUTS OF PORK': 'hogs',
+                'HOGS': 'hogs',
+                'RICE': 'rice',
+                'SORGHUM': 'sorghum',
+                'BARLEY': 'barley'
+            }
+            
+            raw_commodities = raw_df['Commodity'].unique()
+            
+            for raw_commodity in raw_commodities:
+                if raw_commodity in commodity_mapping:
+                    commodities.add(commodity_mapping[raw_commodity])
+                else:
+                    # Try to clean and add unknown commodities
+                    cleaned = str(raw_commodity).lower().strip()
+                    if cleaned and len(cleaned) > 1:
+                        commodities.add(cleaned)
+        
+        return sorted(list(commodities))
+
+    def _filter_csv_by_commodity(self, raw_df: pd.DataFrame, target_commodity: str) -> pd.DataFrame:
+        """
+        Filter raw CSV data for a specific commodity.
+        
+        Args:
+            raw_df: Raw DataFrame from CSV
+            target_commodity: Target commodity to filter for
+            
+        Returns:
+            DataFrame filtered for the specific commodity
+        """
+        if 'Commodity' not in raw_df.columns:
+            return raw_df
+        
+        # Reverse mapping to find raw commodity names
+        commodity_mapping = {
+            'wheat': ['ALL WHEAT', 'WHEAT'],
+            'corn': ['CORN', 'CORN - UNMILLED'],
+            'soybeans': ['SOYBEANS'],
+            'cattle': ['FRESH, CHILLED, OR FROZEN MUSCLE CUTS OF BEEF', 'CATTLE'],
+            'hogs': ['FRESH, CHILLED, OR FROZEN MUSCLE CUTS OF PORK', 'HOGS'],
+            'rice': ['RICE'],
+            'sorghum': ['SORGHUM'],
+            'barley': ['BARLEY']
+        }
+        
+        # Find raw commodity names that match our target
+        target_raw_names = commodity_mapping.get(target_commodity, [target_commodity.upper()])
+        
+        # Filter for matching commodities
+        mask = raw_df['Commodity'].isin(target_raw_names)
+        filtered_df = raw_df[mask].copy()
+        
+        return filtered_df
+
+    def merge_export_years(self, commodity, save_merged=True):
+        """
+        Merge all export years for a commodity into a single /exports/all key.
+        
+        Args:
+            commodity: Commodity name (e.g., 'wheat', 'corn', 'soybeans')
+            save_merged: Whether to save the merged data to /exports/all key
+            
+        Returns:
+            pd.DataFrame: Merged data from all available export years
+        """
+        print(f"Merging export years for {commodity}...")
+        
+        # Get available years for this commodity
+        available_years = self.get_available_years(commodity)
+        
+        if not available_years:
+            print(f"No export years found for {commodity}")
+            return pd.DataFrame()
+        
+        print(f"Found years: {available_years}")
+        
+        all_data = []
+        successful_years = []
+        
+        for year in available_years:
+            try:
+                # Get data for this year
+                year_data = self.get_key(f"{commodity}/exports/{year}")
+                
+                if year_data is not None and not year_data.empty:
+                    # Standardize the data
+                    year_data = self._standardize_esr_columns(year_data, year)
+                    year_data['marketing_year'] = year
+                    all_data.append(year_data)
+                    successful_years.append(year)
+                    print(f"  [OK] {year}: {len(year_data)} rows")
+                else:
+                    print(f"  [WARNING] {year}: No data")
+                    
+            except Exception as e:
+                print(f"  [ERROR] {year}: {e}")
+                continue
+        
+        if not all_data:
+            print(f"No data could be loaded for {commodity}")
+            return pd.DataFrame()
+        
+        # Combine all years
+        merged_data = pd.concat(all_data, ignore_index=True)
+        
+        # Sort by marketing year and date
+        if 'weekEndingDate' in merged_data.columns:
+            merged_data = merged_data.sort_values(['marketing_year', 'weekEndingDate'])
+        else:
+            merged_data = merged_data.sort_values(['marketing_year'])
+        
+        print(f"Merged data: {len(merged_data)} total rows from {len(successful_years)} years")
+        
+        # Save to /exports/all key if requested
+        if save_merged:
+            try:
+                all_key = f"{commodity}/exports/all"
+                with pd.HDFStore(self.table_db, mode='a') as store:
+                    store.put(f'/{all_key}', merged_data, format='table', data_columns=True)
+                print(f"[OK] Saved merged data to /{all_key}")
+            except Exception as e:
+                print(f"[ERROR] Failed to save merged data: {e}")
+        
+        return merged_data
+    
+    def get_merged_export_data(self, commodity, force_refresh=False):
+        """
+        Get merged export data for a commodity, creating it if it doesn't exist.
+        
+        Args:
+            commodity: Commodity name
+            force_refresh: Whether to regenerate the merged data even if it exists
+            
+        Returns:
+            pd.DataFrame: Merged export data from all years
+        """
+        all_key = f"{commodity}/exports/all"
+        
+        # Check if merged data already exists
+        if not force_refresh:
+            try:
+                existing_data = self.get_key(all_key)
+                if existing_data is not None and not existing_data.empty:
+                    print(f"Using existing merged data for {commodity}: {len(existing_data)} rows")
+                    return existing_data
+            except:
+                pass
+        
+        # Generate merged data
+        return self.merge_export_years(commodity, save_merged=True)
 

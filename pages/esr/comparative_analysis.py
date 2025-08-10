@@ -15,7 +15,7 @@ def create_comparative_analysis_layout():
         {
             'title': 'Commodity A - Export Metrics',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_column': 'weeklyExports',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -27,7 +27,7 @@ def create_comparative_analysis_layout():
         {
             'title': 'Commodity B - Export Metrics',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_column': 'weeklyExports',
             'x_column': 'weekEndingDate',
             'width': '100%',

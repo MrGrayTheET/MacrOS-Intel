@@ -4,9 +4,11 @@ from components.chart_components import FundamentalChart, MarketChart, COTPlotte
 from dotenv import load_dotenv
 import dash
 from callbacks.callback_registry import CallbackRegistry
-from dash import dcc, html, dash_table, Input, Output, State
+from dash import dcc, html, dash_table, Input, Output, State, callback
+import dash_ag_grid as dag
 from data.data_tables import MarketTable, TableClient, FASTable
 import pandas as pd
+import plotly.graph_objects as go
 from typing import List, Dict, Any, Union, Optional, Tuple, Callable
 
 
@@ -131,8 +133,21 @@ class FundamentalFrame:
         for i, table_data in enumerate(self.tables):
             table_id = f"{self.div_prefix}_table_{i}"
 
-            table_div = html.Div([
-                dash_table.DataTable(
+            # Check if this is an AG Grid component
+            if table_data.get('component') == 'ag_grid':
+                # Create AG Grid component
+                table_component = dag.AgGrid(
+                    id=table_id,
+                    columnDefs=table_data.get('columnDefs', []),
+                    rowData=table_data.get('rowData', []),
+                    defaultColDef=table_data.get('defaultColDef', {}),
+                    dashGridOptions=table_data.get('dashGridOptions', {}),
+                    className=table_data.get('className', 'ag-theme-alpine-dark'),
+                    style=table_data.get('style', {'height': f"{int(table_height.replace('px', '')) - 50}px"})
+                )
+            else:
+                # Create standard DataTable component
+                table_component = dash_table.DataTable(
                     id=table_id,
                     style_table={
                         'height': f"{int(table_height.replace('px', '')) - 50}px",
@@ -140,6 +155,9 @@ class FundamentalFrame:
                     },
                     **table_data
                 )
+
+            table_div = html.Div([
+                table_component
             ],
                 id=f"{self.div_prefix}_table_container_{i}",
                 className="table-container",
@@ -147,10 +165,11 @@ class FundamentalFrame:
                     'width': table_width,
                     'height': table_height,
                     'padding': '10px',
-                    'border': '1px solid #ddd',
+                    'border': '1px solid #333',
                     'border-radius': '5px',
                     'margin': '5px',
-                    'box-sizing': 'border-box'
+                    'box-sizing': 'border-box',
+                    'backgroundColor': '#1a1a2e'
                 })
 
             table_divs.append(table_div)
@@ -210,6 +229,10 @@ class FundamentalFrame:
             'chart_containers': [f"{self.div_prefix}_chart_container_{i}" for i in range(len(self.charts))],
             'table_containers': [f"{self.div_prefix}_table_container_{i}" for i in range(len(self.tables))]
         }
+    
+    def render(self) -> html.Div:
+        """Alias for generate_layout_div() method for backward compatibility."""
+        return self.generate_layout_div()
 
 class MarketFrame:
     """Simplified MarketFrame focusing only on chart display."""
@@ -370,6 +393,10 @@ class FlexibleMenu:
         self.width = width
         self.title = title
         self.components = []
+        
+        # Data source attributes for store integration
+        self.data_source_type = None  # e.g., 'esr_store', 'direct_table'
+        self.store_id = None  # ID of associated store component
 
     def add_dropdown(self, component_id: str, label: str, options: List[Dict], value=None, multi=False):
         """Add a dropdown component."""
@@ -394,13 +421,37 @@ class FlexibleMenu:
         })
         return self
 
-    def add_button(self, component_id: str, label: str, color='#4CAF50'):
+    def add_button(self, component_id: str, label: str, color='#4CAF50', style=None):
         """Add a button component."""
         self.components.append({
             'type': 'button',
             'id': component_id,
             'label': label,
-            'color': color
+            'color': color,
+            'style': style or {}
+        })
+        return self
+    
+    def add_date_range_picker(self, component_id: str, label: str, start_date=None, end_date=None):
+        """Add a date range picker component."""
+        self.components.append({
+            'type': 'date_range_picker',
+            'id': component_id,
+            'label': label,
+            'start_date': start_date,
+            'end_date': end_date
+        })
+        return self
+    
+    def add_range_slider(self, component_id: str, label: str, min_val: int, max_val: int, value: List[int] = None):
+        """Add a range slider component."""
+        self.components.append({
+            'type': 'range_slider',
+            'id': component_id,
+            'label': label,
+            'min': min_val,
+            'max': max_val,
+            'value': value or [min_val, max_val]
         })
         return self
 
@@ -455,24 +506,62 @@ class FlexibleMenu:
                 ], style={'marginBottom': '20px'})
 
             elif comp['type'] == 'button':
+                button_style = {
+                    'backgroundColor': comp['color'],
+                    'color': 'white',
+                    'border': 'none',
+                    'padding': '12px 20px',
+                    'borderRadius': '5px',
+                    'cursor': 'pointer',
+                    'width': '100%',
+                    'fontSize': '14px',
+                    'fontWeight': 'bold'
+                }
+                button_style.update(comp.get('style', {}))
+                
                 element = html.Div([
                     html.Button(
                         comp['label'],
                         id=f"{self.menu_id}_{comp['id']}",
                         n_clicks=0,
-                        style={
-                            'backgroundColor': comp['color'],
-                            'color': 'white',
-                            'border': 'none',
-                            'padding': '12px 20px',
-                            'borderRadius': '5px',
-                            'cursor': 'pointer',
-                            'width': '100%',
-                            'fontSize': '14px',
-                            'fontWeight': 'bold'
-                        }
+                        style=button_style
                     )
                 ], style={'marginBottom': '15px'})
+            
+            elif comp['type'] == 'date_range_picker':
+                element = html.Div([
+                    html.Label(comp['label'], style={
+                        'fontWeight': 'bold',
+                        'marginBottom': '5px',
+                        'color': '#fff',
+                        'display': 'block'
+                    }),
+                    dcc.DatePickerRange(
+                        id=f"{self.menu_id}_{comp['id']}",
+                        start_date=comp['start_date'],
+                        end_date=comp['end_date'],
+                        display_format='YYYY-MM-DD',
+                        style={'marginBottom': '15px'}
+                    )
+                ], style={'marginBottom': '20px'})
+            
+            elif comp['type'] == 'range_slider':
+                element = html.Div([
+                    html.Label(comp['label'], style={
+                        'fontWeight': 'bold',
+                        'marginBottom': '5px',
+                        'color': '#fff',
+                        'display': 'block'
+                    }),
+                    dcc.RangeSlider(
+                        id=f"{self.menu_id}_{comp['id']}",
+                        min=comp['min'],
+                        max=comp['max'],
+                        value=comp['value'],
+                        marks={i: str(i) for i in range(comp['min'], comp['max'] + 1)},
+                        tooltip={"placement": "bottom", "always_visible": True}
+                    )
+                ], style={'marginBottom': '20px'})
 
             menu_elements.append(element)
 
@@ -494,6 +583,37 @@ class FlexibleMenu:
     def get_component_ids(self) -> Dict[str, str]:
         """Get all component IDs for callback registration."""
         return {comp['id']: f"{self.menu_id}_{comp['id']}" for comp in self.components}
+    
+    def get_all_components(self) -> Dict[str, Dict]:
+        """Get all components with their metadata."""
+        return {comp['id']: comp for comp in self.components}
+    
+    def get_all_values_as_inputs(self) -> List[Input]:
+        """Get all component IDs as Dash Input objects for callback registration."""
+        from dash import Input
+        inputs = []
+        for comp in self.components:
+            component_id = f"{self.menu_id}_{comp['id']}"
+            if comp['type'] == 'dropdown':
+                inputs.append(Input(component_id, 'value'))
+            elif comp['type'] == 'checklist':
+                inputs.append(Input(component_id, 'value'))
+            elif comp['type'] == 'button':
+                inputs.append(Input(component_id, 'n_clicks'))
+            elif comp['type'] == 'date_range_picker':
+                inputs.append(Input(component_id, 'start_date'))
+                inputs.append(Input(component_id, 'end_date'))
+            elif comp['type'] == 'range_slider':
+                inputs.append(Input(component_id, 'value'))
+        return inputs
+    
+    def generate_layout(self) -> html.Div:
+        """Generate the menu layout."""
+        return self.generate_menu_div()
+    
+    def render(self) -> html.Div:
+        """Alias for generate_menu_div() method for backward compatibility."""
+        return self.generate_menu_div()
 
 
 class FrameGrid:
@@ -1464,16 +1584,25 @@ class EnhancedFrameGrid:
     Enhanced FrameGrid with flexible menu and direct chart targeting.
     """
 
-    def __init__(self, frames, flexible_menu: FlexibleMenu = None):
-        """Initialize enhanced frame grid."""
+    def __init__(self, frames, flexible_menu: FlexibleMenu = None, 
+                 data_source: str = None):
+        """Initialize enhanced frame grid with optional store data source.
+        
+        Args:
+            frames: List of frame objects
+            flexible_menu: FlexibleMenu instance
+            data_source: Store ID to read data from (optional, uses table_client if None)
+        """
         self.frames = frames
         self.flexible_menu = flexible_menu
+        self.data_source = data_source
+        self.is_store_mode = data_source is not None
 
-        # Build chart registry for direct targeting
+        # Build chart registry for direct targetingcc
         self.chart_registry = self._build_chart_registry()
 
     def _build_chart_registry(self):
-        """Build registry of all chart_ids and their objects."""
+        """Build registry of all chart_ids and their objects with store/table tracking."""
         registry = {}
         for frame_idx, frame in enumerate(self.frames):
             if hasattr(frame, 'charts'):
@@ -1481,9 +1610,12 @@ class EnhancedFrameGrid:
                     registry[chart.chart_id] = {
                         'chart_object': chart,
                         'frame_index': frame_idx,
-                        'chart_index': chart_idx
+                        'chart_index': chart_idx,
+                        'data_source': self.data_source,
+                        'is_store_mode': self.is_store_mode
                     }
         return registry
+    
 
     def generate_layout_with_menu(self, title: str = "Dashboard") -> html.Div:
         """Generate layout with menu positioned left or right."""
@@ -1493,7 +1625,7 @@ class EnhancedFrameGrid:
 
         if not self.flexible_menu:
             return html.Div([
-                html.H1(title, style={'textAlign': 'center', 'color': '#fff', 'marginBottom': '30px'}),
+                html.H1(title, style={'textAlign': '/center', 'color': '#fff', 'marginBottom': '30px'}),
                 grid_content
             ], style={'backgroundColor': '#0f0f0f', 'minHeight': '100vh', 'padding': '20px'})
 
@@ -1597,12 +1729,16 @@ class EnhancedFrameGrid:
             # Create menu values dict
             menu_values = {}
             state_idx = 0
+            
+            print(f"DEBUG - component_ids: {list(component_ids.keys())}")
+            print(f"DEBUG - state_values: {state_values}")
 
             for comp_id, full_id in component_ids.items():
                 comp_info = next((c for c in self.flexible_menu.components if c['id'] == comp_id), None)
                 if comp_info and comp_info['type'] != 'button':
                     if state_idx < len(state_values):
                         menu_values[comp_id] = state_values[state_idx]
+                        print(f"DEBUG - mapping {comp_id} = {state_values[state_idx]}")
                         state_idx += 1
 
             # Update each chart
@@ -1616,6 +1752,180 @@ class EnhancedFrameGrid:
                     updated_figures.append(no_update)
 
             return updated_figures
+
+    def register_store_callbacks(self, page_name: str = None):
+        """Register store-based callbacks for all charts in the grid."""
+        if not self.is_store_mode:
+            return
+            
+        # Get all chart IDs from registry
+        chart_ids = list(self.chart_registry.keys())
+        if not chart_ids:
+            return
+        
+        # Prepare inputs - include menu inputs if flexible_menu exists
+        inputs = [
+            Input('current-page', 'data'),
+            Input(f'{self.data_source}', 'data')  # Simple store ID
+        ]
+        
+        # Add menu inputs if menu exists
+        if self.flexible_menu:
+            menu_inputs = self.flexible_menu.get_all_values_as_inputs()
+            inputs.extend(menu_inputs)
+            
+        # Create store-based callback for all charts
+        @callback(
+            [Output(chart_id, 'figure', allow_duplicate=True) for chart_id in chart_ids],
+            inputs,
+            prevent_initial_call=False  # Allow initial call to render charts
+        )
+        def update_charts_from_store(*args):
+            """Update charts from store data with menu filtering"""
+            
+            current_page = args[0]
+            store_data = args[1]
+            menu_values = args[2:] if len(args) > 2 else []
+            
+            # Only update if this is the current page (if page_name specified)
+            if page_name and current_page != page_name:
+                return [dash.no_update] * len(chart_ids)
+            
+            if not store_data:
+                # Return empty figures
+                return [self._create_empty_figure(f"Chart {i+1} - No Data") for i in range(len(chart_ids))]
+            
+            try:
+                # Load DataFrame from store
+                df = pd.read_json(store_data, orient='records')
+                df['weekEndingDate'] = pd.to_datetime(df['weekEndingDate'])
+                
+                # Apply menu filtering if menu exists
+                if self.flexible_menu and menu_values:
+                    menu_dict = {}
+                    menu_components = self.flexible_menu.get_all_components()
+                    menu_inputs = self.flexible_menu.get_all_values_as_inputs()
+                    
+                    # Map menu values to component IDs correctly
+                    value_index = 0
+                    for comp_id, comp_info in menu_components.items():
+                        comp_type = comp_info.get('type', '')
+                        
+                        if comp_type == 'date_range_picker':
+                            # Date range picker has two values: start_date and end_date
+                            if value_index < len(menu_values):
+                                menu_dict[f'{comp_id}_start'] = menu_values[value_index]
+                                value_index += 1
+                            if value_index < len(menu_values):
+                                menu_dict[f'{comp_id}_end'] = menu_values[value_index]  
+                                value_index += 1
+                        else:
+                            # Single value components
+                            if value_index < len(menu_values):
+                                menu_dict[comp_id] = menu_values[value_index]
+                                value_index += 1
+                    
+                    # Apply filters based on menu values
+                    df = self._apply_menu_filters(df, menu_dict)
+                
+                # Create figures directly using plotly express with country coloring
+                updated_figures = []
+                for chart_id in chart_ids:
+                    try:
+                        figure = self._create_chart_figure(chart_id, df, menu_dict)
+                        updated_figures.append(figure)
+                    except Exception as e:
+                        print(f"Error creating figure for {chart_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        updated_figures.append(self._create_empty_figure(f"Error: {str(e)}"))
+                
+                return updated_figures
+                
+            except Exception as e:
+                print(f"Error in store-based callback: {e}")
+                return [self._create_empty_figure(f"Error: {str(e)}") for _ in range(len(chart_ids))]
+
+    def _apply_menu_filters(self, df, menu_dict):
+        """Apply menu-based filters to DataFrame"""
+        if df.empty:
+            return df
+            
+        filtered_df = df.copy()
+        
+        # Apply year filtering
+        if 'start_year' in menu_dict and 'end_year' in menu_dict:
+            start_year = menu_dict['start_year']
+            end_year = menu_dict['end_year']
+            if start_year and end_year:
+                filtered_df = filtered_df[
+                    (filtered_df['weekEndingDate'].dt.year >= start_year) & 
+                    (filtered_df['weekEndingDate'].dt.year <= end_year)
+                ]
+        
+        # Apply country filtering
+        if 'country' in menu_dict and menu_dict['country']:
+            country = menu_dict['country']
+            if country != 'ALL_COUNTRIES':
+                filtered_df = filtered_df[filtered_df['country'] == country]
+        elif 'countries' in menu_dict and menu_dict['countries']:
+            countries = menu_dict['countries'] if isinstance(menu_dict['countries'], list) else [menu_dict['countries']]
+            if countries:
+                filtered_df = filtered_df[filtered_df['country'].isin(countries)]
+        
+        # Apply commodity filtering (though this is mainly controlled by store)
+        if 'commodity' in menu_dict and menu_dict['commodity']:
+            commodity = menu_dict['commodity']
+            if 'commodity' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['commodity'] == commodity]
+        
+        return filtered_df
+    
+    def _update_chart_config_from_menu(self, chart_object, chart_id, menu_dict):
+        """Update chart configuration based on menu values"""
+        if not menu_dict:
+            return
+            
+        # Handle commitment metric selection
+        if 'commitment_metric' in menu_dict and menu_dict['commitment_metric']:
+            if 'commitment' in chart_id and 'frame1' in chart_id:
+                chart_object.config['y_column'] = menu_dict['commitment_metric']
+        
+        # Handle seasonal metric selection
+        if 'seasonal_metric' in menu_dict and menu_dict['seasonal_metric']:
+            if 'seasonal' in chart_id:
+                chart_object.config['y_column'] = menu_dict['seasonal_metric']
+        
+        # Handle comparative metrics
+        if 'metric_a' in menu_dict and 'comparison_frame1' in chart_id:
+            chart_object.config['y_column'] = menu_dict['metric_a']
+        if 'metric_b' in menu_dict and 'comparison_frame2' in chart_id:
+            chart_object.config['y_column'] = menu_dict['metric_b']
+        
+        # Handle general metric selection (if exists)
+        if 'metric' in menu_dict and menu_dict['metric']:
+            chart_object.config['y_column'] = menu_dict['metric']
+
+    def register_table_callbacks(self):
+        """Register traditional table-client callbacks (existing behavior)."""
+        if self.is_store_mode:
+            return
+            
+        # Call the existing create_menu_callbacks method for table_client mode
+        # This maintains backward compatibility
+        pass  # Implementation would call existing callback logic
+
+    def _create_empty_figure(self, title: str):
+        """Create empty figure with title for error states."""
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        fig.update_layout(title=title, height=400)
+        return fig
 
 
 # Enhanced configuration examples

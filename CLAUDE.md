@@ -115,9 +115,10 @@ esr_data = fas_client.get_esr_data('commodity', year=2024)
 ```
 
 ### Callback Registration
-Use the callback registry for organized callback management:
+Use the FrameGrid's callback registry for organized callback management:
 ```python
 from callbacks.callback_registry import CallbackRegistry
+from components.frames import  FundamentalFrame, FrameGrid, FlexibleMenu
 registry = CallbackRegistry()
 
 @registry.register(

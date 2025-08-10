@@ -28,3 +28,4 @@ def register_global_callbacks(app):
             return settings
         return current_settings
 
+

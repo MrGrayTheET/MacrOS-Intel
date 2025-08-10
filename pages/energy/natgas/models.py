@@ -1,877 +1,537 @@
 from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional, Union
 
 import numpy as np
 import pandas as pd
-from dash import html, dcc, callback, Output, Input, callback_context, no_update
+from dash import html, dcc, callback, Output, Input, callback_context, no_update, State
 from plotly import graph_objects as go, express as px
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 from data.data_tables import EIATable
-from model_apps import ModelApp
+from components.frames import FundamentalFrame, FlexibleMenu
+from callbacks.callback_registry import CallbackRegistry
 from utils.data_tools import key_to_name, fetch_contract_keys, calc_contract_spreads
 
 
-class StorageApp(ModelApp):
+class LinearRegressionApp:
     """
-    Enhanced StorageApp with flexible filtering capabilities
+    General linear regression application framework with variable selection
     """
-
-    def __init__(self, storage_key='storage/total_lower_48', price_key='prices/NG_1', withdrawal_key ='consumption/net_withdrawals', app_id='price-store-reg'):
-        super().__init__(table_client=EIATable('NG'), keys=[storage_key, price_key, withdrawal_key])
-        self.storage_key = storage_key
-        self.prices_key = price_key
-        self.withdrawal_key = withdrawal_key
-        self.prices_col = key_to_name(price_key)
-        self.storage_col = key_to_name(storage_key)
-        self.withdrawal_col = key_to_name(withdrawal_key)
-        self.data.ffill(inplace=True)
-        self.data = self.data.resample('1W').apply({self.storage_col: 'last', self.prices_col: 'last', self.withdrawal_col:
-                                                    'last'})
-        # Calculate storage metrics
-        self.app_func = self.seasonal_storage_data
-        self.data = self.seasonal_storage_data()
-        # Configure filters for this specific application
-        self.configure_filters({
-            'month': {
-                'key_type': 'range',
-                'label': 'Month',
-                'min_val': 1,
-                'max_val': 12,
-
-            },
-            'signal_strength_decile': {
-                'key_type': 'range',
-                'label': 'Signal Strength Decile',
-                'min_val':0,
-                'max_val':9
-            },
-        })
-
-    def update_keys(self, storage_key=None, price_key=None):
-        keys_to_add = []
-        cols_to_drop = []
-        if isinstance(self.data.index, pd.Index):
-            self.data.index = pd.to_datetime(self.data.index)
-
-        if storage_key:
-            if storage_key != self.storage_key:
-                cols_to_drop.append(self.storage_col)
-                self.storage_key = storage_key
-                self.storage_col = key_to_name(storage_key)
-                keys_to_add.append(storage_key)
-
-        if price_key:
-            if self.prices_key != price_key:
-                cols_to_drop.append(self.prices_col)
-                self.prices_key = price_key
-                self.prices_col = key_to_name(price_key)
-                keys_to_add.append(price_key)
-
-        # Preserve the index range before adding new data
-        min_idx, max_idx = self.data.index.min(), self.data.index.max()
-
-        if keys_to_add:
-            self.__add__(keys_to_add)
-            self.data = self.data.ffill().drop(columns=cols_to_drop)
-
-
-            # Filter Non-datetimes from index
-            self.data = self.data[[isinstance(idx, (pd.Timestamp, datetime)) for idx in self.data.index]]
-            self.data.index = pd.to_datetime(self.data.index) if isinstance(self.data.index,
-                                                                            pd.Index) else self.data.index
-
-            # Resample to weekly and recalculate metrics
-            self.data = self.data.resample('1W').apply({
-                self.storage_col: 'last',
-                self.prices_col: 'last',
-                self.withdrawal_col: 'last'
-            })
-
-            self.data = self.seasonal_storage_data()
-
-        return self.data
-
-    def seasonal_storage_data(self):
-        df = self.data.copy()
-        df['date'] = df.index
-        df = df.sort_values('date')
-
-        # Add week-of-year, month, and year columns
-        df['week_of_year'] = df['date'].dt.isocalendar().week
-        df['year'] = df['date'].dt.year
-        df['month'] = df['date'].dt.month
-
-        # Calculate seasonal historical min/max (same week, past 5 years)
-        df['hist_max'] = np.nan
-        df['hist_min'] = np.nan
-        df['hist_mean'] = np.nan
-
-        for idx, row in df.iterrows():
-            current_week = row['week_of_year']
-            current_year = row['year']
-
-            # Get historical data (same week, past 5 years including current year)
-            historical_mask = (
-                    (df['week_of_year'] == current_week) &
-                    (df['year'] <= current_year) &
-                    (df['year'] > current_year - 5) &
-                    (df.index <= idx)
-            )
-            historical_data = df.loc[historical_mask, self.storage_col]
-
-            if len(historical_data) > 0:
-                df.loc[idx, 'hist_max'] = historical_data.max()
-                df.loc[idx, 'hist_min'] = historical_data.min()
-                df.loc[idx, 'hist_mean'] = historical_data.mean()
-
-        # Calculate percentage position within historical range
-        df['pct_above_min'] = ((df[self.storage_col] - df['hist_min']) /
-                               (df['hist_max'] - df['hist_min'])) * 100
-
-        df['dev_from_mean'] = ((df[self.storage_col] - df['hist_mean']) / df[self.storage_col].std())
-
-        # Calculate future price change (4 weeks ahead)
-        df['price_1mo'] = df[self.prices_col].shift(-4)
-        df['price_3mo'] = df[self.prices_col].shift(-12)
-        df['return_1mo'] = np.log(df.price_1mo) - np.log(df[self.prices_col])
-        df['return_3mo'] = np.log(df.price_3mo) - np.log(df[self.prices_col])
-        df['signal_strength_decile'] = pd.qcut(df['dev_from_mean'],10, labels=False)
-
-        return df
-
-    def generate_layout_div(self):
-        """Generate the enhanced Dash layout with flexible filtering"""
-        # Filter dates to exclude last 4 weeks to avoid incomplete forward-looking data
-        valid_dates = self.data[self.data['date'] <= self.data['date'].max() - timedelta(weeks=4)]
-
-        if 'date' in valid_dates.columns:
-            min_date = valid_dates['date'].min()
-            max_date = valid_dates['date'].max()
-            default_date = max_date
-        else:
-            min_date = valid_dates.index.min()
-            max_date = valid_dates.index.max()
-            default_date = max_date
-
-        # Generate menus using the enhanced base class functionality
-        menu_div = self.generate_menu(categories=['prices', 'storage'])
-
-        # Generate the flexible filter menu
-        filter_menu = self.generate_filter_menu(
-            filter_columns=['month', 'signal_strength_decile'],  # Only these 2
-            filter_configs={  # Only include configs for these 2
-                'month': self.filter_configs['month'],
-                'signal_strength_decile': self.filter_configs['signal_strength_decile']
-            },
-            include_series_selector=False
+    
+    def __init__(self, 
+                 table_client,
+                 app_id: str = 'linear-regression',
+                 title: str = 'Linear Regression Analysis'):
+        self.table_client = table_client
+        self.app_id = app_id
+        self.title = title
+        self.registry = CallbackRegistry()
+        self.data = pd.DataFrame()
+        self.filtered_data = pd.DataFrame()
+        self.menu = None
+        self.frame = None
+        
+    def setup_menu(self, additional_components: List[Dict] = None) -> FlexibleMenu:
+        """Setup the flexible menu with standard regression controls"""
+        menu = FlexibleMenu(
+            menu_id=f'{self.app_id}-menu',
+            title='Regression Controls',
+            width='350px'
         )
-
-        layout = html.Div([
-            html.H1("Natural Gas Storage-Price Analysis", style={'textAlign': 'center'}),
-            html.Div(children=[
-                menu_div,
-                filter_menu,
-                html.Div(id=f'{self.app_id}-scatter-plot-div', children=[
-                    dcc.Graph(id=f'{self.app_id}-scatter-plot')],
-                         style={
-                             'height': '20%',
-                             'width': '50%',
-                             'marginTop': '5px'
-                         })],
-                style={'display': 'flex', 'height': '20%', 'width': '100%'}),
-
-            html.Div(id=f'{self.app_id}-line-plot-div', children=[
-
-                dcc.Tabs(children=[
-                    dcc.Tab(children=[
-                        dcc.Graph(id=f'{self.app_id}-storage-plot')
-                    ]),
-                    dcc.Tab(children=[
-                        dcc.Graph(id=f'{self.app_id}-withdrawal-plot')
-                    ])
-                ]),
-            ],
-                     style={
-                         'height': '60%',
-                         'width': '100%',
-                         'marginTop': '10px'
-                     }),
-
-            html.Div(id=f'{self.app_id}-metrics-container', className='metrics-grid', style={
-                'display': 'grid',
-                'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))',
-                'gap': '15px',
-                'margin': '20px'
-            }),
-
-            html.Div([
-                html.H3("Analysis Summary"),
-                html.Div(id=f'{self.app_id}-summary')
-            ], style={'margin': '20px'})
-        ])
-
-        return layout
-
-    def register_callbacks(self, app):
-        @callback(
-            [Output(f'{self.app_id}-storage-plot', 'figure'),
-             Output(f'{self.app_id}-withdrawal-plot', 'figure'),
-             Output(f'{self.app_id}-metrics-container', 'children'),
-             Output(f'{self.app_id}-scatter-plot', 'figure'),
-             Output(f'{self.app_id}-summary', 'children'),
-             Output(f'{self.app_id}-month-range-slider', 'value'),
-             Output(f'{self.app_id}-signal_strength_decile-range-slider', 'value')],
-            [Input(f'{self.app_id}-date-picker', 'date'),
-             Input(f'{self.app_id}-apply-filters-btn', 'n_clicks'),
-             Input(f'{self.app_id}-reset-filters-btn', 'n_clicks'),
-             Input(f'{self.app_id}-prices-dropdown', 'value'),
-             Input(f'{self.app_id}-storage-dropdown', 'value'),
-             Input(f'{self.app_id}-month-range-slider', 'value'),
-             Input(f'{self.app_id}-signal_strength_decile-range-slider', 'value')],
-            prevent_initial_call=False
+        
+        # Date range picker
+        menu.add_date_range_picker(
+            f'{self.app_id}-date-range',
+            'Date Range',
+            start_date=self.data.index.min() if not self.data.empty else datetime.now() - timedelta(days=365),
+            end_date=self.data.index.max() if not self.data.empty else datetime.now()
         )
-        def update_analysis(selected_date, apply_clicks, reset_clicks,
-                            price_key, storage_key, month_range, ssq_values):
-            # Get callback context to identify trigger
-            ctx = callback_context
-            trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
-
-            selected_date = pd.to_datetime(selected_date)
-
-            # Handle key updates first (affects both original and filtered data)
-            if price_key or storage_key:
-                self.update_keys(price_key=price_key, storage_key=storage_key)
-                self.original_data = self.data.copy()  # Update original data
-                self.filtered_data = pd.DataFrame()  # Reset filtered data
-
-            # Use original data as base for processing
-            df = self.original_data.copy().dropna(subset=[self.withdrawal_col, self.prices_col, self.storage_col])
-
-            # Handle reset action
-            if trigger_id == f'{self.app_id}-reset-filters-btn':
-                self.filtered_data = pd.DataFrame()  # Clear filtered data
-                # Get default values for filters
-                month_options = self.get_filter_options('month')
-                ssq_options = self.get_filter_options('signal_strength_decile')
-                reset_month_range = [month_options['min'], month_options['max']]
-                reset_ssq_values = [ssq_options['min'], ssq_options['max']]
-                summary_text = "Filters reset successfully"
-
-            # Handle apply action
-            elif trigger_id == f'{self.app_id}-apply-filters-btn':
-                filter_values = {
-                    'month_range': month_range,
-                    'signal_strength_decile_values': ssq_values
-                }
-                self.filtered_data = self.apply_filters(df, filter_values)
-                reset_month_range = no_update
-                reset_ssq_values = no_update
-                summary_text = f"Applied filters: {len(self.filtered_data)}/{len(df)} records"
-
-            # No filter action - use last state
-            else:
-                reset_month_range = no_update
-                reset_ssq_values = no_update
-                summary_text = "Using current data selection"
-
-            # Determine which dataset to use for visualizations
-            display_df = self.filtered_data if not self.filtered_data.empty else df
-            # Get data for selected date (same logic as before)
-            if 'date' in df.columns:
-                selected_data = df[df['date'] == selected_date]
-            else:
-                selected_data = df[df.index == selected_date]
-
-            if selected_data.empty:
-                if 'date' in df.columns:
-                    closest_date = df.loc[(df['date'] - selected_date).abs().idxmin(), 'date']
-                    selected_data = df[df['date'] == closest_date]
-                else:
-                    delta_series = pd.Series(df.index - selected_date)
-                    closest_idx = delta_series.abs().idxmin()
-                    selected_data = df.iloc[[closest_idx]]
-
-            selected_row = selected_data.iloc[0]
-
-            # Create visualizations (same logic as before but with filtered data)
-            storage_fig = go.Figure()
-
-            # Add storage level
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df[self.storage_col],
-                name='Current Storage',
-                line=dict(color='blue', width=2)
-            ))
-
-            # Add 5-year max/min bands
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df['hist_max'],
-                name='5-Year Max',
-                line=dict(color='red', dash='dash')
-            ))
-
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df['hist_min'],
-                name='5-Year Min',
-                line=dict(color='green', dash='dash')
-            ))
-
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df['hist_mean'],
-                name='5-Year Mean',
-                line=dict(color='orange', dash='dot')
-            ))
-
-            storage_fig.update_layout(
-                title="Natural Gas Storage Levels vs Historical Range",
-                xaxis_title="Date",
-                yaxis_title="Storage Volume (BCF)",
-                hovermode='x unified'
-            )
-
-            withdrawal_fig = go.Figure(go.Scatter(
-                x=df['date'],
-                y=df[self.withdrawal_col],
-                line=dict(color='blue')
-                ),
-                layout=dict(xaxis_title = "Date",
-                yaxis_title= "Net Withdrawals (BCF)"))
-
-            # Prepare metrics (same as before)
-            metrics = [
-                ("Current Storage", f"{selected_row[self.storage_col]:,.0f} BCF"),
-                ("5-Year Max", f"{selected_row['hist_max']:,.0f} BCF"),
-                ("5-Year Min", f"{selected_row['hist_min']:,.0f} BCF"),
-                ("% Above 5Y Min", f"{selected_row['pct_above_min']:.1f}%"),
-                ("Current Price", f"${selected_row[self.prices_col]:,.2f}"),
-                ("Price 1Mo Later",
-                 f"${selected_row['price_1mo']:,.2f}" if pd.notna(selected_row['price_1mo']) else "N/A"),
-                ("1Mo Price Change",
-                 f"{selected_row['return_1mo']:+.1f}%" if pd.notna(selected_row['return_1mo']) else "N/A"),
-                ("3Mo Price Change",
-                 f"{selected_row['return_3mo']:+.1f}%" if pd.notna(selected_row['return_3mo']) else "N/A")
-            ]
-
-            # Create metrics HTML
-            metrics_html = [
-                html.Div([
-                    html.Div(metric[0], className='metric-label', style={'fontWeight': 'bold'}),
-                    html.Div(metric[1], className='metric-value', style={'fontSize': '1.2em'})
-                ], className='metric-item', style={
-                    'border': '1px solid #ddd',
-                    'padding': '10px',
-                    'borderRadius': '5px',
-                    'backgroundColor': '#f9f9f9'
-                }) for metric in metrics
-            ]
-
-            # Create scatter plot showing historical relationship with filtered data
-            valid_data = display_df.dropna(subset=['dev_from_mean', 'return_1mo'])
-
-            scatter_fig = px.scatter(
-                display_df,
-                x='dev_from_mean',
-                y='return_1mo',
-                color='signal_strength_decile' if 'signal_strength_decile' in valid_data.columns else None,
-                trendline='ols',
-                title=f"Storage Position vs Future Price Change (1 Month) - {len(valid_data)} observations",
-                labels={
-                    'dev_from_mean': 'Deviation from 5-Year Mean',
-                    'return_1mo': 'Price Change Next Month (%)',
-                    'signal_strength_decile': 'Signal Strength'
-                }
-            )
-
-            # Add current selection
-            if pd.notna(selected_row['return_1mo']):
-                scatter_fig.add_trace(go.Scatter(
-                    x=[selected_row['dev_from_mean']],
-                    y=[selected_row['return_1mo']],
-                    mode='markers',
-                    marker=dict(color='red', size=12, symbol='star'),
-                    name='Selected Date'
-                ))
-
-            # Analysis summary with filter information
-            storage_position = "high" if selected_row['pct_above_min'] > 50 else "low"
-            expected_direction = "decrease" if selected_row['pct_above_min'] > 50 else "increase"
-
-            filter_info = ""
-            if apply_clicks and not reset_clicks:
-                filter_info = f"\n• Analysis based on {len(valid_data)} filtered observations"
-
-            summary_text = f"""
-            Based on the analysis for {selected_date.strftime('%Y-%m-%d')}:
-
-            • Storage is at {selected_row['pct_above_min']:.1f}% above the 5-year minimum, indicating a {storage_position} storage position
-            • Historical patterns suggest prices typically {expected_direction} when storage is at this level
-            • Actual price change was {selected_row['return_1mo']:+.1f}% over the following month{filter_info}
-            """
-
-            summary_html = html.Pre(summary_text, style={'whiteSpace': 'pre-wrap'})
-
-            return  storage_fig,withdrawal_fig,  metrics_html,  scatter_fig, summary_html,  reset_month_range,  reset_ssq_values
-
-
-class StorageAppWSpreads(StorageApp):
-    """
-    Enhanced StorageApp with flexible filtering capabilities
-    """
-
-    def __init__(self, storage_key='storage/total_lower_48', price_key='prices/NG_1', withdrawal_key ='consumption/net_withdrawals'):
-        super().__init__()
-        self.data.drop(columns=[self.prices_col], inplace=True)
-        self.futures_keys = fetch_contract_keys(self.table_client)
-        self.__add__(self.futures_keys)
-        self.futures_cols = [key_to_name(k) for k in self.futures_keys]
-        resample_params = {self.storage_col: 'last', self.prices_col: 'last', self.withdrawal_col:
-                                                    'last'}
-        resample_params.update({self.futures_cols[i]:'last' for i in range(0, len(self.futures_cols))})
-        self.data.ffill(inplace=True)
-        self.data = self.data.resample('1W').last()
-        # Calculate storage metrics
-        self.app_func = self.seasonal_storage_data
-        self.data = self.seasonal_storage_data()
-        # Configure filters for this specific application
-        self.configure_filters({
-            'month': {
-                'key_type': 'range',
-                'label': 'Month',
-                'min_val': 1,
-                'max_val': 12
+        
+        # Variable selection dropdowns
+        numeric_columns = self.data.select_dtypes(include=[np.number]).columns.tolist()
+        options = [{'label': col, 'value': col} for col in numeric_columns]
+        
+        menu.add_dropdown(
+            f'{self.app_id}-x-variable',
+            'Independent Variable (X)',
+            options=options,
+            value=numeric_columns[0] if numeric_columns else None
+        )
+        
+        menu.add_dropdown(
+            f'{self.app_id}-y-variable', 
+            'Dependent Variable (Y)',
+            options=options,
+            value=numeric_columns[1] if len(numeric_columns) > 1 else numeric_columns[0] if numeric_columns else None
+        )
+        
+        # Filter controls
+        menu.add_range_slider(
+            f'{self.app_id}-month-filter',
+            'Month Filter',
+            min_val=1, max_val=12,
+            value=[1, 12]
+        )
+        
+        # Action buttons
+        menu.add_button(f'{self.app_id}-apply-filters', 'Apply Filters', style={'margin': '10px'})
+        menu.add_button(f'{self.app_id}-reset-filters', 'Reset Filters', style={'margin': '10px'})
+        
+        # Add any additional components
+        if additional_components:
+            for component in additional_components:
+                comp = component.copy()
+                comp_type = comp.pop('type')
+                
+                if comp_type == 'dropdown':
+                    menu.add_dropdown(**comp)
+                elif comp_type == 'range_slider':
+                    menu.add_range_slider(**comp)
+                elif comp_type == 'button':
+                    menu.add_button(**comp)
+        
+        return menu
+    
+    def setup_frame(self) -> FundamentalFrame:
+        """Setup the fundamental frame with regression charts"""
+        chart_configs = [
+            {
+                'title': 'Scatter Plot with Regression Line',
+                'chart_type': 'scatter',
+                'starting_key': '',
+                'width': '100%',
+                'height': 400
             },
-            'signal_strength_decile': {
-                'key_type': 'range',
-                'label': 'Signal Strength Decile',
-                'min_val':0,
-                'max_val':9
+            {
+                'title': 'Time Series Comparison',
+                'chart_type': 'line',
+                'starting_key': '',
+                'width': '100%', 
+                'height': 300
             },
-            'signal_series': {
-                'key_type': 'single_select',
-                'label': 'Signal Series',
-                'source': 'columns',
-                'match': {'contains': '1mo'}
+            {
+                'title': 'Residuals Analysis',
+                'chart_type': 'scatter',
+                'starting_key': '',
+                'width': '100%',
+                'height': 300
             }
+        ]
+        
+        frame = FundamentalFrame(
+            table_client=self.table_client,
+            chart_configs=chart_configs,
+            div_prefix=f'{self.app_id}-frame'
+        )
+        
+        return frame
+    
+    def apply_filters(self, data: pd.DataFrame, filter_params: Dict) -> pd.DataFrame:
+        """Apply filters to the data"""
+        filtered = data.copy()
+        
+        # Date range filter
+        if 'date_range' in filter_params and filter_params['date_range']:
+            start_date, end_date = filter_params['date_range']
+            if start_date and end_date:
+                filtered = filtered[
+                    (filtered.index >= pd.to_datetime(start_date)) &
+                    (filtered.index <= pd.to_datetime(end_date))
+                ]
+        
+        # Month filter
+        if 'month_range' in filter_params and filter_params['month_range']:
+            month_min, month_max = filter_params['month_range']
+            filtered = filtered[
+                (filtered.index.month >= month_min) & 
+                (filtered.index.month <= month_max)
+            ]
+        
+        return filtered
+    
+    def perform_regression(self, data: pd.DataFrame, x_col: str, y_col: str) -> Dict:
+        """Perform linear regression and return results"""
+        if x_col not in data.columns or y_col not in data.columns:
+            return {}
+        
+        # Remove NaN values
+        clean_data = data[[x_col, y_col]].dropna()
+        
+        if len(clean_data) < 2:
+            return {}
+        
+        X = clean_data[x_col].values.reshape(-1, 1)
+        y = clean_data[y_col].values
+        
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        y_pred = model.predict(X)
+        r2 = r2_score(y, y_pred)
+        
+        return {
+            'model': model,
+            'r2': r2,
+            'slope': model.coef_[0],
+            'intercept': model.intercept_,
+            'predictions': y_pred,
+            'residuals': y - y_pred,
+            'x_values': clean_data[x_col].values,
+            'y_values': y,
+            'data': clean_data
+        }
+    
+    def create_scatter_figure(self, regression_results: Dict, x_col: str, y_col: str) -> go.Figure:
+        """Create scatter plot with regression line"""
+        if not regression_results:
+            return go.Figure().add_annotation(
+                text="No valid data for regression",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+        
+        fig = go.Figure()
+        
+        # Scatter points
+        fig.add_trace(go.Scatter(
+            x=regression_results['x_values'],
+            y=regression_results['y_values'],
+            mode='markers',
+            name='Data Points',
+            marker=dict(color='blue', size=6)
+        ))
+        
+        # Regression line
+        fig.add_trace(go.Scatter(
+            x=regression_results['x_values'],
+            y=regression_results['predictions'],
+            mode='lines',
+            name=f'Regression Line (R² = {regression_results["r2"]:.3f})',
+            line=dict(color='red', width=2)
+        ))
+        
+        fig.update_layout(
+            title=f'{y_col} vs {x_col}',
+            xaxis_title=x_col,
+            yaxis_title=y_col,
+            hovermode='closest'
+        )
+        
+        return fig
+    
+    def create_timeseries_figure(self, data: pd.DataFrame, x_col: str, y_col: str) -> go.Figure:
+        """Create time series comparison figure"""
+        fig = go.Figure()
+        
+        if x_col in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data[x_col],
+                name=x_col,
+                line=dict(color='blue'),
+                yaxis='y'
+            ))
+        
+        if y_col in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data[y_col],
+                name=y_col,
+                line=dict(color='red'),
+                yaxis='y2'
+            ))
+        
+        fig.update_layout(
+            title='Time Series Comparison',
+            xaxis_title='Date',
+            yaxis=dict(title=x_col, side='left'),
+            yaxis2=dict(title=y_col, side='right', overlaying='y')
+        )
+        
+        return fig
+    
+    def create_residuals_figure(self, regression_results: Dict) -> go.Figure:
+        """Create residuals analysis figure"""
+        if not regression_results:
+            return go.Figure().add_annotation(
+                text="No residuals to display",
+                xref="paper", yref="paper", 
+                x=0.5, y=0.5, showarrow=False
+            )
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=regression_results['predictions'],
+            y=regression_results['residuals'],
+            mode='markers',
+            name='Residuals',
+            marker=dict(color='green', size=6)
+        ))
+        
+        # Add horizontal line at y=0
+        fig.add_hline(y=0, line_dash="dash", line_color="red")
+        
+        fig.update_layout(
+            title='Residuals vs Fitted Values',
+            xaxis_title='Fitted Values',
+            yaxis_title='Residuals'
+        )
+        
+        return fig
+    
+    def generate_layout(self) -> html.Div:
+        """Generate the complete application layout"""
+        self.menu = self.setup_menu()
+        self.frame = self.setup_frame()
+        
+        return html.Div([
+            html.H1(self.title, style={'textAlign': 'center'}),
+            html.Div([
+                self.menu.generate_layout(),
+                html.Div([
+                    # Main charts area
+                    html.Div(id=f'{self.app_id}-scatter-chart'),
+                    html.Div(id=f'{self.app_id}-timeseries-chart'),
+                    html.Div(id=f'{self.app_id}-residuals-chart'),
+                    
+                    # Metrics display
+                    html.Div(id=f'{self.app_id}-metrics', 
+                            style={'margin': '20px', 'padding': '20px', 
+                                   'border': '1px solid #ddd', 'borderRadius': '5px'})
+                ], style={'flex': '1', 'padding': '20px'})
+            ], style={'display': 'flex', 'height': '100vh'})
+        ])
+
+
+class NaturalGasStorageApp(LinearRegressionApp):
+    """
+    Specialized Natural Gas Storage Analysis Application
+    """
+    
+    def __init__(self, 
+                 storage_key='storage/total_lower_48',
+                 price_key='prices/NG_1', 
+                 withdrawal_key='consumption/net_withdrawals',
+                 app_id='natgas-storage'):
+        
+        table_client = EIATable('NG')
+        super().__init__(table_client, app_id, 'Natural Gas Storage Analysis')
+        
+        self.storage_key = storage_key
+        self.price_key = price_key
+        self.withdrawal_key = withdrawal_key
+        
+        # Get column names
+        self.storage_col = key_to_name(storage_key)
+        self.price_col = key_to_name(price_key)
+        self.withdrawal_col = key_to_name(withdrawal_key)
+        
+        # Load and process data
+        self._load_data()
+        
+    def _load_data(self):
+        """Load and process natural gas data"""
+        raw_data = self.table_client.get_keys([self.storage_key, self.price_key, self.withdrawal_key])
+        raw_data = raw_data.ffill()
+        
+        # Resample to weekly
+        self.data = raw_data.resample('1W').agg({
+            self.storage_col: 'last',
+            self.price_col: 'last', 
+            self.withdrawal_col: 'last'
         })
-
-    def update_keys(self, storage_key=None, price_key=None):
-        keys_to_add = []
-        cols_to_drop = []
-        if isinstance(self.data.index, pd.Index):
-            self.data.index = pd.to_datetime(self.data.index)
-
-        if storage_key:
-            if storage_key != self.storage_key:
-                cols_to_drop.append(self.storage_col)
-                self.storage_key = storage_key
-                self.storage_col = key_to_name(storage_key)
-                keys_to_add.append(storage_key)
-
-        if price_key:
-            if self.prices_key != price_key:
-                cols_to_drop.append(self.prices_col)
-                self.prices_key = price_key
-                self.prices_col = key_to_name(price_key)
-                keys_to_add.append(price_key)
-
-        # Preserve the index range before adding new data
-        min_idx, max_idx = self.data.index.min(), self.data.index.max()
-
-        if keys_to_add:
-            self.__add__(keys_to_add)
-            self.data = self.data.ffill().drop(columns=cols_to_drop)
-
-
-            # Filter Non-datetimes from index
-            self.data = self.data[[isinstance(idx, (pd.Timestamp, datetime)) for idx in self.data.index]]
-            self.data.index = pd.to_datetime(self.data.index) if isinstance(self.data.index,
-                                                                            pd.Index) else self.data.index
-
-            # Resample to weekly and recalculate metrics
-            self.data = self.data.resample('1W').apply({
-                self.storage_col: 'last',
-                self.prices_col: 'last',
-                self.withdrawal_col: 'last'
-            })
-
-            self.data = self.seasonal_storage_data()
-
-        return self.data
-
-    def seasonal_storage_data(self):
-        df = self.data.copy()
+        
+        # Calculate seasonal storage metrics
+        self.data = self._calculate_seasonal_storage_metrics(self.data)
+        
+    def _calculate_seasonal_storage_metrics(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate seasonal storage metrics including (data - 5ymin)/(5ymax - 5ymin)
+        """
+        df = data.copy()
         df['date'] = df.index
         df = df.sort_values('date')
-
-        # Add week-of-year, month, and year columns
+        
+        # Add temporal columns
         df['week_of_year'] = df['date'].dt.isocalendar().week
         df['year'] = df['date'].dt.year
         df['month'] = df['date'].dt.month
-
-        # Calculate seasonal historical min/max (same week, past 5 years)
+        
+        # Initialize columns
         df['hist_max'] = np.nan
         df['hist_min'] = np.nan
         df['hist_mean'] = np.nan
-
+        
+        # Calculate 5-year historical metrics for each week
         for idx, row in df.iterrows():
             current_week = row['week_of_year']
             current_year = row['year']
-
-            # Get historical data (same week, past 5 years including current year)
+            
+            # Get historical data for same week over past 5 years
             historical_mask = (
-                    (df['week_of_year'] == current_week) &
-                    (df['year'] <= current_year) &
-                    (df['year'] > current_year - 5) &
-                    (df.index <= idx)
+                (df['week_of_year'] == current_week) &
+                (df['year'] <= current_year) &
+                (df['year'] > current_year - 5) &
+                (df.index <= idx)
             )
             historical_data = df.loc[historical_mask, self.storage_col]
-
+            
             if len(historical_data) > 0:
                 df.loc[idx, 'hist_max'] = historical_data.max()
                 df.loc[idx, 'hist_min'] = historical_data.min()
                 df.loc[idx, 'hist_mean'] = historical_data.mean()
-
-        # Calculate percentage position within historical range
-        df['pct_above_min'] = ((df[self.storage_col] - df['hist_min']) /
-                               (df['hist_max'] - df['hist_min'])) * 100
-
-        df['dev_from_mean'] = ((df[self.storage_col] - df['hist_mean']) / df['hist_mean'])
-
-        # Calculate future price change (4 weeks ahead)
-        df['price_1mo'] = df[self.prices_col].shift(-4)
-        df['price_3mo'] = df[self.prices_col].shift(-12)
-        df['return_1mo'] = np.log(df.price_1mo) - np.log(df[self.prices_col])
-        df['return_3mo'] = np.log(df.price_3mo) - np.log(df[self.prices_col])
-        df['signal_strength_decile'] = pd.qcut(df['dev_from_mean'],10, labels=False)
-
-        df = calc_contract_spreads(df, second_month=False)
-        for i in df.columns:
-            if 'spread' in i:
-                df[f'{i}_return_1mo'] = df[i].shift(-4) - df[i]
-                df[f'{i}_return_1wk'] = df[i].shift(-1) - df[i]
-
+        
+        # Calculate the key metric: (data - 5ymin)/(5ymax - 5ymin)
+        df['storage_percentile'] = (
+            (df[self.storage_col] - df['hist_min']) / 
+            (df['hist_max'] - df['hist_min'])
+        ) * 100
+        
+        # Additional metrics
+        df['dev_from_mean'] = (df[self.storage_col] - df['hist_mean']) / df['hist_mean']
+        
+        # Forward-looking price changes
+        df['price_1mo'] = df[self.price_col].shift(-4)  # 4 weeks ahead
+        df['price_3mo'] = df[self.price_col].shift(-12)  # 12 weeks ahead
+        df['return_1mo'] = (df['price_1mo'] / df[self.price_col]) - 1
+        df['return_3mo'] = (df['price_3mo'] / df[self.price_col]) - 1
+        
+        # Signal strength deciles
+        df['signal_strength_decile'] = pd.qcut(df['dev_from_mean'].dropna(), 10, labels=False, duplicates='drop')
+        
         return df
-
-    def generate_layout_div(self):
-        """Generate the enhanced Dash layout with flexible filtering"""
-        # Filter dates to exclude last 4 weeks to avoid incomplete forward-looking data
-        valid_dates = self.data[self.data['date'] <= self.data['date'].max() - timedelta(weeks=4)]
-
-        if 'date' in valid_dates.columns:
-            min_date = valid_dates['date'].min()
-            max_date = valid_dates['date'].max()
-            default_date = max_date
-        else:
-            min_date = valid_dates.index.min()
-            max_date = valid_dates.index.max()
-            default_date = max_date
-
-        # Generate menus using the enhanced base class functionality
-        menu_div = self.generate_menu(categories=['prices', 'storage'])
-
-        # Generate the flexible filter menu
-        filter_menu = self.generate_filter_menu(
-            filter_columns=['month', 'signal_strength_decile'],  # Only these 2
-            filter_configs={  # Only include configs for these 2
-                'month': self.filter_configs['month'],
-                'signal_strength_decile': self.filter_configs['signal_strength_decile']
+    
+    def setup_menu(self, additional_components: List[Dict] = None) -> FlexibleMenu:
+        """Setup menu with natural gas specific controls"""
+        
+        # Natural gas specific components
+        natgas_components = [
+            {
+                'type': 'dropdown',
+                'component_id': 'storage-series',
+                'label': 'Storage Series',
+                'options': [
+                    {'label': 'Total Lower 48', 'value': 'storage/total_lower_48'},
+                    {'label': 'East Region', 'value': 'storage/east'},
+                    {'label': 'West Region', 'value': 'storage/west'},
+                    {'label': 'Producing Region', 'value': 'storage/producing'}
+                ],
+                'value': self.storage_key
             },
-            include_series_selector=True
-        )
-
-        layout = html.Div([
-            html.H1("Natural Gas Storage-Price Analysis", style={'textAlign': 'center'}),
-            html.Div(children=[
-                menu_div,
-                filter_menu,
-                html.Div(id=f'{self.app_id}-scatter-plot-div', children=[
-                    dcc.Graph(id=f'{self.app_id}-scatter-plot')],
-                         style={
-                             'height': '20%',
-                             'width': '50%',
-                             'marginTop': '5px'
-                         })],
-                style={'display': 'flex', 'height': '20%', 'width': '100%'}),
-
-            html.Div(id=f'{self.app_id}-line-plot-div', children=[
-
-                dcc.Tabs(children=[
-                    dcc.Tab(children=[
-                        dcc.Graph(id=f'{self.app_id}-storage-plot')
-                    ]),
-                    dcc.Tab(children=[
-                        dcc.Graph(id=f'{self.app_id}-withdrawal-plot')
-                    ])
-                ]),
-            ],
-                     style={
-                         'height': '60%',
-                         'width': '100%',
-                         'marginTop': '10px'
-                     }),
-
-            html.Div(id=f'{self.app_id}-metrics-container', className='metrics-grid', style={
-                'display': 'grid',
-                'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))',
-                'gap': '15px',
-                'margin': '20px'
-            }),
-
-            html.Div([
-                html.H3("Analysis Summary"),
-                html.Div(id=f'{self.app_id}-summary')
-            ], style={'margin': '20px'})
-        ])
-
-        return layout
-
+            {
+                'type': 'dropdown', 
+                'component_id': 'price-series',
+                'label': 'Price Series',
+                'options': [
+                    {'label': 'Natural Gas Futures (Front Month)', 'value': 'prices/NG_1'},
+                    {'label': 'Natural Gas Futures (2nd Month)', 'value': 'prices/NG_2'},
+                    {'label': 'Henry Hub Spot', 'value': 'prices/henry_hub_spot'}
+                ],
+                'value': self.price_key
+            },
+            {
+                'type': 'range_slider',
+                'component_id': 'signal-strength-filter',
+                'label': 'Signal Strength Decile',
+                'min_val': 0, 'max_val': 9,
+                'value': [0, 9]
+            }
+        ]
+        
+        # Combine with additional components if provided
+        all_components = natgas_components + (additional_components or [])
+        
+        return super().setup_menu(all_components)
+    
     def register_callbacks(self, app):
-        @callback(
-            [Output(f'{self.app_id}-storage-plot', 'figure'),
-             Output(f'{self.app_id}-withdrawal-plot', 'figure'),
-             Output(f'{self.app_id}-metrics-container', 'children'),
-             Output(f'{self.app_id}-scatter-plot', 'figure'),
-             Output(f'{self.app_id}-summary', 'children'),
-             Output(f'{self.app_id}-month-range-slider', 'value'),
-             Output(f'{self.app_id}-signal_strength_decile-range-slider', 'value')],
-            [Input(f'{self.app_id}-date-picker', 'date'),
-             Input(f'{self.app_id}-apply-filters-btn', 'n_clicks'),
-             Input(f'{self.app_id}-reset-filters-btn', 'n_clicks'),
-             Input(f'{self.app_id}-prices-dropdown', 'value'),
-             Input(f'{self.app_id}-storage-dropdown', 'value'),
-             Input(f'{self.app_id}-month-range-slider', 'value'),
-             Input(f'{self.app_id}-signal_strength_decile-range-slider', 'value'),
-             Input(f'{self.app_id}-x-dd', 'value'),  # New X dropdown input
-             Input(f'{self.app_id}-y-dd', 'value')],  # New Y dropdown input
-            prevent_initial_call=False
+        """Register callbacks for the natural gas storage app"""
+        
+        @self.registry.register(
+            name=f'{self.app_id}-main-callback',
+            outputs=[
+                (f'{self.app_id}-scatter-chart', 'children'),
+                (f'{self.app_id}-timeseries-chart', 'children'),
+                (f'{self.app_id}-residuals-chart', 'children'),
+                (f'{self.app_id}-metrics', 'children')
+            ],
+            inputs=[
+                (f'{self.app_id}-menu_x-variable', 'value'),
+                (f'{self.app_id}-menu_y-variable', 'value'),
+                (f'{self.app_id}-menu_date-range', 'start_date'),
+                (f'{self.app_id}-menu_date-range', 'end_date'),
+                (f'{self.app_id}-menu_month-filter', 'value'),
+                (f'{self.app_id}-menu_storage-series', 'value'),
+                (f'{self.app_id}-menu_price-series', 'value'),
+                (f'{self.app_id}-menu_apply-filters', 'n_clicks'),
+                (f'{self.app_id}-menu_reset-filters', 'n_clicks')
+            ],
+            states=[
+                (f'{self.app_id}-menu_signal-strength-filter', 'value')
+            ]
         )
-        def update_analysis(selected_date, apply_clicks, reset_clicks,
-                            price_key, storage_key, month_range, ssq_values,
-                            x_variable, y_variable):  # New parameters
-            # Get callback context to identify trigger
+        def update_analysis(x_var, y_var, start_date, end_date, month_range, 
+                           storage_series, price_series, apply_clicks, reset_clicks,
+                           signal_strength_range):
+            
+            # Handle data updates if series changed
+            if storage_series != self.storage_key or price_series != self.price_key:
+                self.storage_key = storage_series
+                self.price_key = price_series
+                self.storage_col = key_to_name(storage_series)
+                self.price_col = key_to_name(price_series)
+                self._load_data()
+            
+            # Apply filters
+            filter_params = {
+                'date_range': [start_date, end_date],
+                'month_range': month_range
+            }
+            
             ctx = callback_context
-            trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
-
-            selected_date = pd.to_datetime(selected_date)
-
-            # Handle key updates first (affects both original and filtered data)
-            if price_key or storage_key:
-                self.update_keys(price_key=price_key, storage_key=storage_key)
-                self.original_data = self.data.copy()  # Update original data
-                self.filtered_data = pd.DataFrame()  # Reset filtered data
-
-            # Use original data as base for processing
-            df = self.original_data.copy().dropna(subset=[self.withdrawal_col, self.prices_col, self.storage_col])
-
-            # Handle reset action
-            if trigger_id == f'{self.app_id}-reset-filters-btn':
-                self.filtered_data = pd.DataFrame()  # Clear filtered data
-                # Get default values for filters
-                month_options = self.get_filter_options('month')
-                ssq_options = self.get_filter_options('signal_strength_decile')
-                reset_month_range = [month_options['min'], month_options['max']]
-                reset_ssq_values = [ssq_options['min'], ssq_options['max']]
-                summary_text = "Filters reset successfully"
-
-            # Handle apply action
-            elif trigger_id == f'{self.app_id}-apply-filters-btn':
-                filter_values = {
-                    'month_range': month_range,
-                    'signal_strength_decile_range': ssq_values  # Fixed key name
-                }
-                self.filtered_data = self.apply_filters(df, filter_values)
-                reset_month_range = no_update
-                reset_ssq_values = no_update
-                summary_text = f"Applied filters: {len(self.filtered_data)}/{len(df)} records"
-
-            # No filter action - use last state
+            if ctx.triggered and f'{self.app_id}-menu_reset-filters' in ctx.triggered[0]['prop_id']:
+                # Reset filters
+                filtered_data = self.data.copy()
             else:
-                reset_month_range = no_update
-                reset_ssq_values = no_update
-                summary_text = "Using current data selection"
-
-            # Determine which dataset to use for visualizations
-            display_df = self.filtered_data if not self.filtered_data.empty else df
-
-            # Get data for selected date
-            if 'date' in df.columns:
-                selected_data = df[df['date'] == selected_date]
+                filtered_data = self.apply_filters(self.data, filter_params)
+            
+            # Additional filtering by signal strength
+            if signal_strength_range:
+                min_strength, max_strength = signal_strength_range
+                filtered_data = filtered_data[
+                    (filtered_data['signal_strength_decile'] >= min_strength) &
+                    (filtered_data['signal_strength_decile'] <= max_strength)
+                ]
+            
+            # Perform regression
+            regression_results = self.perform_regression(filtered_data, x_var, y_var)
+            
+            # Create figures
+            scatter_fig = self.create_scatter_figure(regression_results, x_var, y_var)
+            timeseries_fig = self.create_timeseries_figure(filtered_data, x_var, y_var)
+            residuals_fig = self.create_residuals_figure(regression_results)
+            
+            # Create metrics display
+            if regression_results:
+                metrics_div = html.Div([
+                    html.H3("Regression Statistics"),
+                    html.P(f"R-squared: {regression_results['r2']:.4f}"),
+                    html.P(f"Slope: {regression_results['slope']:.4f}"),
+                    html.P(f"Intercept: {regression_results['intercept']:.4f}"),
+                    html.P(f"Sample Size: {len(regression_results['data'])}"),
+                    html.H4("Interpretation"),
+                    html.P(f"Storage Percentile Range: {filtered_data['storage_percentile'].min():.1f}% - {filtered_data['storage_percentile'].max():.1f}%"),
+                    html.P(f"Mean Storage Percentile: {filtered_data['storage_percentile'].mean():.1f}%")
+                ])
             else:
-                selected_data = df[df.index == selected_date]
-
-            if selected_data.empty:
-                if 'date' in df.columns:
-                    closest_date = df.loc[(df['date'] - selected_date).abs().idxmin(), 'date']
-                    selected_data = df[df['date'] == closest_date]
-                else:
-                    delta_series = pd.Series(df.index - selected_date)
-                    closest_idx = delta_series.abs().idxmin()
-                    selected_data = df.iloc[[closest_idx]]
-
-            selected_row = selected_data.iloc[0]
-
-            # Create storage visualization
-            storage_fig = go.Figure()
-
-            # Add storage level
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df[self.storage_col],
-                name='Current Storage',
-                line=dict(color='blue', width=2)
-            ))
-
-            # Add 5-year max/min bands
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df['hist_max'],
-                name='5-Year Max',
-                line=dict(color='red', dash='dash')
-            ))
-
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df['hist_min'],
-                name='5-Year Min',
-                line=dict(color='green', dash='dash')
-            ))
-
-            storage_fig.add_trace(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df['hist_mean'],
-                name='5-Year Mean',
-                line=dict(color='orange', dash='dot')
-            ))
-
-            storage_fig.update_layout(
-                title="Natural Gas Storage Levels vs Historical Range",
-                xaxis_title="Date",
-                yaxis_title="Storage Volume (BCF)",
-                hovermode='x unified'
-            )
-
-            # Create withdrawal figure
-            withdrawal_fig = go.Figure(go.Scatter(
-                x=df['date'] if 'date' in df.columns else df.index,
-                y=df[self.withdrawal_col],
-                line=dict(color='blue')
-            ))
-
-            withdrawal_fig.update_layout(
-                title="Net Withdrawals",
-                xaxis_title="Date",
-                yaxis_title="Net Withdrawals (BCF)"
-            )
-
-            # Prepare metrics
-            metrics = [
-                ("Current Storage", f"{selected_row[self.storage_col]:,.0f} BCF"),
-                ("5-Year Max", f"{selected_row['hist_max']:,.0f} BCF"),
-                ("5-Year Min", f"{selected_row['hist_min']:,.0f} BCF"),
-                ("% Above 5Y Min", f"{selected_row['pct_above_min']:.1f}%"),
-                ("Current Price", f"${selected_row[self.prices_col]:,.2f}"),
-                ("Price 1Mo Later",
-                 f"${selected_row['price_1mo']:,.2f}" if pd.notna(selected_row['price_1mo']) else "N/A"),
-                ("1Mo Price Change",
-                 f"{selected_row['return_1mo'] * 100:+.1f}%" if pd.notna(selected_row['return_1mo']) else "N/A"),
-                ("3Mo Price Change",
-                 f"{selected_row['return_3mo'] * 100:+.1f}%" if pd.notna(selected_row['return_3mo']) else "N/A")
+                metrics_div = html.P("No valid data for analysis")
+            
+            return [
+                dcc.Graph(figure=scatter_fig),
+                dcc.Graph(figure=timeseries_fig), 
+                dcc.Graph(figure=residuals_fig),
+                metrics_div
             ]
-
-            # Create metrics HTML
-            metrics_html = [
-                html.Div([
-                    html.Div(metric[0], className='metric-label', style={'fontWeight': 'bold'}),
-                    html.Div(metric[1], className='metric-value', style={'fontSize': '1.2em'})
-                ], className='metric-item', style={
-                    'border': '1px solid #ddd',
-                    'padding': '10px',
-                    'borderRadius': '5px',
-                    'backgroundColor': '#f9f9f9'
-                }) for metric in metrics
-            ]
-
-            # Create scatter plot using selected X and Y variables
-            # Set defaults if not selected
-            if not x_variable:
-                x_variable = 'total_lower_48_storage' if 'total_lower_48_storage' in display_df.columns else \
-                display_df.columns[0]
-            if not y_variable:
-                y_variable = 'return_1mo' if 'return_1mo' in display_df.columns else display_df.columns[1]
-
-            # Ensure selected variables exist in the dataframe
-            if x_variable not in display_df.columns or y_variable not in display_df.columns:
-                scatter_fig = go.Figure()
-                scatter_fig.add_annotation(
-                    text="Selected variables not found in data",
-                    xref="paper", yref="paper",
-                    x=0.5, y=0.5,
-                    showarrow=False
-                )
-                scatter_fig.update_layout(
-                    title="Scatter Plot - Invalid Variable Selection",
-                    xaxis_title=x_variable,
-                    yaxis_title=y_variable
-                )
-            else:
-                # Create scatter plot with filtered data
-                valid_data = display_df.dropna(subset=[x_variable, y_variable])
-
-                # Determine color variable (use signal_strength_decile if available)
-                color_var = 'signal_strength_decile' if 'signal_strength_decile' in valid_data.columns else None
-
-                scatter_fig = px.scatter(
-                    valid_data,
-                    x=x_variable,
-                    y=y_variable,
-                    color=color_var,
-                    trendline='ols',
-                    title=f"{y_variable} vs {x_variable} - {len(valid_data)} observations",
-                    labels={
-                        x_variable: x_variable.replace('_', ' ').title(),
-                        y_variable: y_variable.replace('_', ' ').title(),
-                        'signal_strength_decile': 'Signal Strength'
-                    }
-                )
-
-                # If y_variable is a return, multiply by 100 for percentage
-                if 'return' in y_variable.lower():
-                    scatter_fig.update_layout(yaxis=dict(tickformat='.1%'))
-
-                # Add current selection point if both variables are available
-                if pd.notna(selected_row.get(x_variable)) and pd.notna(selected_row.get(y_variable)):
-                    scatter_fig.add_trace(go.Scatter(
-                        x=[selected_row[x_variable]],
-                        y=[selected_row[y_variable]],
-                        mode='markers',
-                        marker=dict(color='red', size=12, symbol='star'),
-                        name='Selected Date',
-                        showlegend=True
-                    ))
-
-            # Analysis summary with dynamic variable information
-            storage_position = "high" if selected_row['pct_above_min'] > 50 else "low"
-            expected_direction = "decrease" if selected_row['pct_above_min'] > 50 else "increase"
-
-            filter_info = ""
-            if not self.filtered_data.empty:
-                filter_info = f"\n• Analysis based on {len(self.filtered_data)} filtered observations"
-
-            # Add scatter plot variable info
-            scatter_info = f"\n• Scatter plot shows {y_variable} vs {x_variable}"
-
-            summary_text = f"""
-            Based on the analysis for {selected_date.strftime('%Y-%m-%d')}:
-
-            • Storage is at {selected_row['pct_above_min']:.1f}% above the 5-year minimum, indicating a {storage_position} storage position
-            • Historical patterns suggest prices typically {expected_direction} when storage is at this level
-            • Actual price change was {selected_row.get('return_1mo', 0) * 100:+.1f}% over the following month{filter_info}
-            {scatter_info}
-            """
-
-            summary_html = html.Pre(summary_text, style={'whiteSpace': 'pre-wrap'})
-
-            return (storage_fig, withdrawal_fig, metrics_html, scatter_fig,
-                    summary_html, reset_month_range, reset_ssq_values)
+        
+        # Register the callbacks with the app
+        self.registry.register_callbacks(app)

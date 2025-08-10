@@ -135,6 +135,18 @@ def update_client_options(client_type):
                 placeholder="Select commodity to update..."
             ),
             html.Br(),
+            html.Label("Data Source:"),
+            dcc.Dropdown(
+                id="esr_data_source",
+                options=[
+                    {"label": "Historical Data (Production API)", "value": "historical"},
+                    {"label": "Current Week Data (Staging API)", "value": "current"},
+                    {"label": "Combined (Historical + Current)", "value": "combined"}
+                ],
+                value="historical",
+                placeholder="Select data source..."
+            ),
+            html.Br(),
             html.Label("Year Range:"),
             dbc.Row([
                 dbc.Col([

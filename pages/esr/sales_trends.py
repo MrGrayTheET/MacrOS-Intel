@@ -20,7 +20,7 @@ def create_sales_trends_layout():
         {
             'title': 'Weekly Export Trends',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_column': 'weeklyExports',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -29,7 +29,7 @@ def create_sales_trends_layout():
         {
             'title': 'Outstanding Sales Analysis',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_column': 'outstandingSales',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -38,7 +38,7 @@ def create_sales_trends_layout():
         {
             'title': 'Gross New Sales Trends',
             'chart_type': 'bar',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_column': 'grossNewSales',
             'x_column': 'weekEndingDate',
             'width': '100%',

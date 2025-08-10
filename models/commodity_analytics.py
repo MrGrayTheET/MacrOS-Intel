@@ -56,6 +56,53 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
         'commodity': 'commodity'
     }
     
+    @staticmethod
+    def aggregate_multi_country_data(data: pd.DataFrame, countries: list, 
+                                    group_cols: list = None) -> pd.DataFrame:
+        """
+        Static method to aggregate data from multiple countries by summing values.
+        
+        Args:
+            data: ESR DataFrame with country column
+            countries: List of countries to include in aggregation
+            group_cols: Columns to group by (default: ['weekEndingDate', 'marketing_year', 'my_week'])
+            
+        Returns:
+            Aggregated DataFrame with summed values for selected countries
+        """
+        if group_cols is None:
+            group_cols = ['weekEndingDate']
+            # Add marketing_year and my_week if they exist
+            if 'marketing_year' in data.columns:
+                group_cols.append('marketing_year')
+            if 'my_week' in data.columns:
+                group_cols.append('my_week')
+        
+        # Filter data for selected countries
+        country_data = data[data['country'].isin(countries)].copy()
+        
+        if country_data.empty:
+            return pd.DataFrame()
+        
+        # Define numeric columns to sum (exclude grouping and categorical columns)
+        exclude_cols = group_cols + ['country', 'commodity']
+        numeric_cols = [col for col in country_data.select_dtypes(include=[np.number]).columns 
+                       if col not in exclude_cols]
+        
+        # Group by specified columns and sum numeric values
+        agg_dict = {col: 'sum' for col in numeric_cols}
+        
+        # Add non-numeric columns we want to preserve
+        if 'commodity' in country_data.columns:
+            agg_dict['commodity'] = 'first'
+        
+        aggregated = country_data.groupby(group_cols).agg(agg_dict).reset_index()
+        
+        # Add a combined country identifier
+        aggregated['country'] = f'Combined ({len(countries)} countries)'
+        
+        return aggregated
+
     def __init__(self, data: pd.DataFrame, commodity_type: str = 'grains'):
         """
         Initialize ESR analyzer.
@@ -201,12 +248,14 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
         return results
     
     def commitment_vs_shipment_analysis(self, country: Optional[str] = None,
+                                      countries: Optional[list] = None,
                                       commodity: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze relationship between commitments and actual shipments.
         
         Args:
-            country: Specific country to analyze (optional)
+            country: Specific single country to analyze (optional)
+            countries: List of countries to aggregate and analyze (optional)
             commodity: Specific commodity to analyze (optional)
             
         Returns:
@@ -214,9 +263,14 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
         """
         data = self.data.copy()
         
-        # Filter by country/commodity if specified
-        if country:
+        # Handle multi-country aggregation
+        if countries and len(countries) > 1:
+            data = self.aggregate_multi_country_data(data, countries)
+        elif countries and len(countries) == 1:
+            data = data[data['country'] == countries[0]]
+        elif country:
             data = data[data['country'] == country]
+            
         if commodity:
             data = data[data['commodity'] == commodity]
         
@@ -265,12 +319,16 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
                 data['outstandingSales'] / recent_avg_exports.replace(0, np.nan)
             ).fillna(0)
             
+            # Also create a simplified sales_backlog column for charting
+            data['sales_backlog'] = data['sales_backlog_weeks']
+            
             results['sales_backlog'] = {
                 'mean_weeks': data['sales_backlog_weeks'].mean(),
                 'median_weeks': data['sales_backlog_weeks'].median(),
                 'max_weeks': data['sales_backlog_weeks'].max(),
                 'trend': self._calculate_trend(data['sales_backlog_weeks'].dropna())
             }
+        results['data'] = data
         
         # Correlations between commitment metrics
         correlation_cols = [col for col in available_cols if col in data.columns]

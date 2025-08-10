@@ -282,7 +282,8 @@ class FundamentalChart:
 
     def __init__(self, chart_id, data=None, config=None, title="Supply/Demand Chart",
                  x_column='Date', chart_type='bar',
-                 width='49%', line_color='blue', height=300, float_position='left', margin='5px 1%'):
+                 width='49%', line_color='blue', height=300, float_position='left', margin='5px 1%',
+                 theme='plotly_dark'):
         config = {} if config is None else config
         self.config = config
         self.chart_id = chart_id
@@ -296,6 +297,7 @@ class FundamentalChart:
         self.margin = config.get('margin', margin)
         self.y_column = config.get('y_column', None)
         self.x_column = config.get('x_column', x_column)
+        self.theme = config.get('theme', theme)
 
     def _load_data(self):
         """Load data from HDF5 file using TableClient"""
@@ -333,7 +335,12 @@ class FundamentalChart:
             xaxis_title=self.x_column,
             yaxis_title=self.y_column,
             height=self.height,
-            margin=dict(l=40, r=40, t=40, b=40)
+            margin=dict(l=40, r=40, t=40, b=40),
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'),
+            hovermode='x unified'
         )
 
         return fig
@@ -383,7 +390,12 @@ class FundamentalChart:
             xaxis_title=self.x_column,
             yaxis_title=self.y_column,
             height=self.height,
-            margin=dict(l=40, r=40, t=40, b=40)
+            margin=dict(l=40, r=40, t=40, b=40),
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'),
+            hovermode='x unified'
         )
 
         return fig
@@ -421,7 +433,12 @@ class FundamentalChart:
             xaxis_title=self.x_column,
             yaxis_title=self.y_column,
             height=self.height,
-            margin=dict(l=40, r=40, t=40, b=40)
+            margin=dict(l=40, r=40, t=40, b=40),
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'),
+            hovermode='x unified'
         )
 
         return fig
@@ -610,7 +627,11 @@ class MultiChart(FundamentalChart):
             title=self.title,
             height=self.height,
             margin=dict(l=40, r=40, t=40, b=40),
-            hovermode='x unified'
+            hovermode='x unified',
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
         )
 
         return fig
@@ -642,7 +663,12 @@ class MultiChart(FundamentalChart):
             yaxis_title="Value",
             height=self.height,
             margin=dict(l=40, r=40, t=40, b=40),
-            barmode='group'  # Grouped bars
+            barmode='group',  # Grouped bars
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'),
+            hovermode='x unified'
         )
 
         return fig
@@ -675,7 +701,12 @@ class MultiChart(FundamentalChart):
             xaxis_title=self.x_column,
             yaxis_title="Value",
             height=self.height,
-            margin=dict(l=40, r=40, t=40, b=40)
+            margin=dict(l=40, r=40, t=40, b=40),
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'),
+            hovermode='x unified'
         )
 
         return fig
@@ -712,7 +743,11 @@ class MultiChart(FundamentalChart):
             yaxis_title="Normalized Value (0-100)",
             height=self.height,
             margin=dict(l=40, r=40, t=40, b=40),
-            hovermode='x unified'
+            hovermode='x unified',
+            template=self.theme,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
         )
 
         return fig

@@ -4,7 +4,7 @@ import toml
 import zipfile
 from io import BytesIO
 import os
-from data.sources.data_tables import store_folder
+from data.data_tables import store_folder
 
 
 class EIABulk:

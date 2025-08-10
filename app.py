@@ -39,7 +39,8 @@ navbar = dbc.NavbarSimple(
 
 from pages import trade_bal
 from pages.agricultural import psd_data
-from pages.esr import home
+from pages.esr import home_rebuilt
+
 
 # Main layout
 app.layout = html.Div([

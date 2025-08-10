@@ -19,7 +19,7 @@ def create_country_analysis_layout():
         {
             'title': 'Country Export Performance (5-Year)',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_columns': ['weeklyExports'],
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -28,7 +28,7 @@ def create_country_analysis_layout():
         {
             'title': 'Outstanding Sales Trend (5-Year)',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/2024',
+            'starting_key': 'cattle/exports/all',
             'y_columns': ['outstandingSales'],
             'x_column': 'weekEndingDate',
             'width': '100%',
