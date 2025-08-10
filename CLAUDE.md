@@ -44,7 +44,6 @@ This is a **Commodities Dashboard** - a multi-page Dash application for analyzin
 ### Running the Application
 ```bash
 python app.py              # Main multi-page dashboard
-python pages/esr_app.py    # Standalone ESR application
 ```
 
 ### Dependencies
@@ -78,6 +77,8 @@ data_path=F:\Macro\OSINT
 ### Creating New Charts
 Use `FundamentalFrame` with chart configurations:
 ```python
+from components.frames import  FundamentalFrame
+
 chart_configs = [{
     'title': 'Chart Title',
     'chart_type': 'line',  # line, bar, area
@@ -94,6 +95,23 @@ frame = FundamentalFrame(
     div_prefix="unique_prefix"
 )
 ```
+## Creating a menu to control callbacks
+```python 
+from components.frames import FlexibleMenu
+commodity = 'cattle'
+menu_configs = [{'type':'dropdown',  'id':'menu-id', 'options':{'label':f'{commodity.capitalize()}', 'value':f'{commodity.capitalize()}/exports/all'}, 'value':f'{commodity}/exports/all', }]
+grid_menu = FlexibleMenu(menu_id='grid-menu',component_configs=menu_configs)
+
+```
+
+## Combining menu and frames into grid
+
+```python
+
+
+```
+
+
 
 ### Adding New Pages
 1. Create page module in `pages/`

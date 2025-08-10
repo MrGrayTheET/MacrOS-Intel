@@ -378,7 +378,8 @@ class FlexibleMenu:
                  menu_id: str,
                  position: str = 'right',  # 'left' or 'right'
                  width: str = '300px',
-                 title: str = 'Controls'):
+                 title: str = 'Controls',
+                 component_configs: List[Dict[str, Any]] = None):
         """
         Initialize the flexible menu.
 
@@ -387,6 +388,7 @@ class FlexibleMenu:
             position: 'left' or 'right'
             width: Menu width
             title: Menu title
+            component_configs: List of component configuration dictionaries
         """
         self.menu_id = menu_id
         self.position = position
@@ -397,6 +399,101 @@ class FlexibleMenu:
         # Data source attributes for store integration
         self.data_source_type = None  # e.g., 'esr_store', 'direct_table'
         self.store_id = None  # ID of associated store component
+        
+        # Add components from configurations if provided
+        if component_configs:
+            self.add_components_from_configs(component_configs)
+
+    def add_components_from_configs(self, component_configs: List[Dict[str, Any]]):
+        """
+        Add components from a list of configuration dictionaries.
+        
+        Args:
+            component_configs: List of component configuration dictionaries
+            
+        Component configuration format:
+        {
+            'type': 'dropdown' | 'checklist' | 'button' | 'date_range_picker' | 'range_slider' | 'input' | 'radio_items',
+            'id': 'component_id',
+            'label': 'Component Label',
+            # Type-specific parameters:
+            'options': [...],  # For dropdown, checklist, radio_items
+            'value': ...,      # Default value
+            'multi': bool,     # For dropdown
+            'color': str,      # For button
+            'style': dict,     # Additional styling
+            'start_date': str, # For date_range_picker
+            'end_date': str,   # For date_range_picker
+            'min': int,        # For range_slider, input
+            'max': int,        # For range_slider, input
+            'step': float,     # For input
+            'type_input': str, # For input ('number', 'text', 'email', etc.)
+            'placeholder': str # For input
+        }
+        """
+        for config in component_configs:
+            comp_type = config.get('type')
+            comp_id = config.get('id')
+            label = config.get('label', '')
+            
+            if not comp_type or not comp_id:
+                continue
+                
+            if comp_type == 'dropdown':
+                self.add_dropdown(
+                    component_id=comp_id,
+                    label=label,
+                    options=config.get('options', []),
+                    value=config.get('value'),
+                    multi=config.get('multi', False)
+                )
+            elif comp_type == 'checklist':
+                self.add_checklist(
+                    component_id=comp_id,
+                    label=label,
+                    options=config.get('options', []),
+                    value=config.get('value')
+                )
+            elif comp_type == 'button':
+                self.add_button(
+                    component_id=comp_id,
+                    label=label,
+                    color=config.get('color', '#4CAF50'),
+                    style=config.get('style')
+                )
+            elif comp_type == 'date_range_picker':
+                self.add_date_range_picker(
+                    component_id=comp_id,
+                    label=label,
+                    start_date=config.get('start_date'),
+                    end_date=config.get('end_date')
+                )
+            elif comp_type == 'range_slider':
+                self.add_range_slider(
+                    component_id=comp_id,
+                    label=label,
+                    min_val=config.get('min', 0),
+                    max_val=config.get('max', 100),
+                    value=config.get('value')
+                )
+            elif comp_type == 'input':
+                self.add_input(
+                    component_id=comp_id,
+                    label=label,
+                    input_type=config.get('type_input', 'text'),
+                    value=config.get('value'),
+                    placeholder=config.get('placeholder', ''),
+                    min_val=config.get('min'),
+                    max_val=config.get('max'),
+                    step=config.get('step')
+                )
+            elif comp_type == 'radio_items':
+                self.add_radio_items(
+                    component_id=comp_id,
+                    label=label,
+                    options=config.get('options', []),
+                    value=config.get('value')
+                )
 
     def add_dropdown(self, component_id: str, label: str, options: List[Dict], value=None, multi=False):
         """Add a dropdown component."""
@@ -452,6 +549,33 @@ class FlexibleMenu:
             'min': min_val,
             'max': max_val,
             'value': value or [min_val, max_val]
+        })
+        return self
+
+    def add_input(self, component_id: str, label: str, input_type: str = 'text', value=None, 
+                  placeholder: str = '', min_val=None, max_val=None, step=None):
+        """Add an input component."""
+        self.components.append({
+            'type': 'input',
+            'id': component_id,
+            'label': label,
+            'input_type': input_type,
+            'value': value,
+            'placeholder': placeholder,
+            'min': min_val,
+            'max': max_val,
+            'step': step
+        })
+        return self
+
+    def add_radio_items(self, component_id: str, label: str, options: List[Dict], value=None):
+        """Add a radio items component."""
+        self.components.append({
+            'type': 'radio_items',
+            'id': component_id,
+            'label': label,
+            'options': options,
+            'value': value
         })
         return self
 
@@ -562,6 +686,48 @@ class FlexibleMenu:
                         tooltip={"placement": "bottom", "always_visible": True}
                     )
                 ], style={'marginBottom': '20px'})
+            
+            elif comp['type'] == 'input':
+                element = html.Div([
+                    html.Label(comp['label'], style={
+                        'fontWeight': 'bold',
+                        'marginBottom': '5px',
+                        'color': '#fff',
+                        'display': 'block'
+                    }),
+                    dcc.Input(
+                        id=f"{self.menu_id}_{comp['id']}",
+                        type=comp['input_type'],
+                        value=comp['value'],
+                        placeholder=comp['placeholder'],
+                        min=comp.get('min'),
+                        max=comp.get('max'),
+                        step=comp.get('step'),
+                        style={
+                            'width': '100%',
+                            'padding': '8px',
+                            'marginBottom': '15px',
+                            'borderRadius': '4px',
+                            'border': '1px solid #ccc'
+                        }
+                    )
+                ], style={'marginBottom': '20px'})
+            
+            elif comp['type'] == 'radio_items':
+                element = html.Div([
+                    html.Label(comp['label'], style={
+                        'fontWeight': 'bold',
+                        'marginBottom': '10px',
+                        'color': '#fff',
+                        'display': 'block'
+                    }),
+                    dcc.RadioItems(
+                        id=f"{self.menu_id}_{comp['id']}",
+                        options=comp['options'],
+                        value=comp['value'],
+                        style={'color': '#fff'}
+                    )
+                ], style={'marginBottom': '20px'})
 
             menu_elements.append(element)
 
@@ -604,6 +770,10 @@ class FlexibleMenu:
                 inputs.append(Input(component_id, 'start_date'))
                 inputs.append(Input(component_id, 'end_date'))
             elif comp['type'] == 'range_slider':
+                inputs.append(Input(component_id, 'value'))
+            elif comp['type'] == 'input':
+                inputs.append(Input(component_id, 'value'))
+            elif comp['type'] == 'radio_items':
                 inputs.append(Input(component_id, 'value'))
         return inputs
     
@@ -1597,7 +1767,6 @@ class EnhancedFrameGrid:
         self.flexible_menu = flexible_menu
         self.data_source = data_source
         self.is_store_mode = data_source is not None
-
         # Build chart registry for direct targetingcc
         self.chart_registry = self._build_chart_registry()
 
@@ -1615,7 +1784,6 @@ class EnhancedFrameGrid:
                         'is_store_mode': self.is_store_mode
                     }
         return registry
-    
 
     def generate_layout_with_menu(self, title: str = "Dashboard") -> html.Div:
         """Generate layout with menu positioned left or right."""
@@ -1679,11 +1847,11 @@ class EnhancedFrameGrid:
 
     def create_menu_callbacks(self, app, update_function):
         """
-        Create callbacks for menu interactions.
+        Create callbacks for menu interactions with support for store data.
 
         Args:
             app: Dash app instance
-            update_function: Function that takes (chart_id, **menu_values) and returns updated figure
+            update_function: Function that takes (chart_id, store_data=None, **menu_values) and returns updated figure
         """
         if not self.flexible_menu:
             return
@@ -1704,6 +1872,10 @@ class EnhancedFrameGrid:
         inputs = []
         states = []
 
+        # Add store data as state if in store mode
+        if self.is_store_mode and self.data_source:
+            states.append(State(self.data_source, 'data'))
+
         for comp_id, full_id in component_ids.items():
             comp_info = next((c for c in self.flexible_menu.components if c['id'] == comp_id), None)
             if comp_info:
@@ -1721,31 +1893,47 @@ class EnhancedFrameGrid:
             states,
             prevent_initial_call=True
         )
-        def update_charts_from_menu(n_clicks, *state_values):
-            """Update charts based on menu selections."""
+        def update_charts_from_menu(*args):
+            """Update charts based on menu selections with store data support."""
+            n_clicks = args[0] if args else 0
             if not n_clicks:
                 return [no_update] * len(chart_outputs)
+
+            # Extract store data and state values
+            state_values = args[1:] if len(args) > 1 else []
+            store_data = None
+            menu_state_values = state_values
+
+            # Extract store data if in store mode
+            if self.is_store_mode and state_values:
+                store_data = state_values[0]
+                menu_state_values = state_values[1:]
 
             # Create menu values dict
             menu_values = {}
             state_idx = 0
             
+            print(f"DEBUG - Store mode: {self.is_store_mode}, Store data available: {bool(store_data)}")
             print(f"DEBUG - component_ids: {list(component_ids.keys())}")
-            print(f"DEBUG - state_values: {state_values}")
+            print(f"DEBUG - menu_state_values: {menu_state_values}")
 
             for comp_id, full_id in component_ids.items():
                 comp_info = next((c for c in self.flexible_menu.components if c['id'] == comp_id), None)
                 if comp_info and comp_info['type'] != 'button':
-                    if state_idx < len(state_values):
-                        menu_values[comp_id] = state_values[state_idx]
-                        print(f"DEBUG - mapping {comp_id} = {state_values[state_idx]}")
+                    if state_idx < len(menu_state_values):
+                        menu_values[comp_id] = menu_state_values[state_idx]
+                        print(f"DEBUG - mapping {comp_id} = {menu_state_values[state_idx]}")
                         state_idx += 1
 
             # Update each chart
             updated_figures = []
             for chart_id in chart_ids:
                 try:
-                    updated_figure = update_function(chart_id, **menu_values)
+                    # Pass store data to update function if available
+                    if self.is_store_mode:
+                        updated_figure = update_function(chart_id, store_data=store_data, **menu_values)
+                    else:
+                        updated_figure = update_function(chart_id, **menu_values)
                     updated_figures.append(updated_figure)
                 except Exception as e:
                     print(f"Error updating chart {chart_id}: {e}")
@@ -1753,8 +1941,15 @@ class EnhancedFrameGrid:
 
             return updated_figures
 
-    def register_store_callbacks(self, page_name: str = None):
-        """Register store-based callbacks for all charts in the grid."""
+    def register_store_callbacks(self, app, update_function, page_name: str = None):
+        """
+        Register store-based callbacks for all charts in the grid.
+        
+        Args:
+            app: Dash app instance
+            update_function: Function that takes (chart_id, store_data=None, **menu_values) and returns updated figure
+            page_name: Optional page name for selective updates
+        """
         if not self.is_store_mode:
             return
             
@@ -1763,11 +1958,12 @@ class EnhancedFrameGrid:
         if not chart_ids:
             return
         
-        # Prepare inputs - include menu inputs if flexible_menu exists
-        inputs = [
-            Input('current-page', 'data'),
-            Input(f'{self.data_source}', 'data')  # Simple store ID
-        ]
+        # Prepare inputs - store data is primary trigger
+        inputs = [Input(f'{self.data_source}', 'data')]
+        
+        # Add current page input if page name is specified
+        if page_name:
+            inputs.insert(0, Input('current-page', 'data'))
         
         # Add menu inputs if menu exists
         if self.flexible_menu:
@@ -1775,76 +1971,166 @@ class EnhancedFrameGrid:
             inputs.extend(menu_inputs)
             
         # Create store-based callback for all charts
-        @callback(
+        @app.callback(
             [Output(chart_id, 'figure', allow_duplicate=True) for chart_id in chart_ids],
             inputs,
             prevent_initial_call=False  # Allow initial call to render charts
         )
         def update_charts_from_store(*args):
-            """Update charts from store data with menu filtering"""
+            """Update charts from store data with menu filtering using custom update function"""
             
-            current_page = args[0]
-            store_data = args[1]
-            menu_values = args[2:] if len(args) > 2 else []
+            arg_idx = 0
+            current_page = None
             
-            # Only update if this is the current page (if page_name specified)
-            if page_name and current_page != page_name:
-                return [dash.no_update] * len(chart_ids)
+            # Extract current page if page_name specified
+            if page_name:
+                current_page = args[arg_idx] if len(args) > arg_idx else None
+                arg_idx += 1
+                
+                # Only update if this is the current page
+                if current_page != page_name:
+                    return [dash.no_update] * len(chart_ids)
+            
+            # Extract store data
+            store_data = args[arg_idx] if len(args) > arg_idx else None
+            arg_idx += 1
+            
+            # Extract menu values
+            menu_values = args[arg_idx:] if len(args) > arg_idx else []
             
             if not store_data:
                 # Return empty figures
                 return [self._create_empty_figure(f"Chart {i+1} - No Data") for i in range(len(chart_ids))]
             
             try:
-                # Load DataFrame from store
-                df = pd.read_json(store_data, orient='records')
-                df['weekEndingDate'] = pd.to_datetime(df['weekEndingDate'])
+                # Validate and extract store data
+                validated_data = self._validate_store_data(store_data)
+                if not validated_data:
+                    return [self._create_empty_figure(f"Chart {i+1} - Invalid Data") for i in range(len(chart_ids))]
                 
-                # Apply menu filtering if menu exists
-                if self.flexible_menu and menu_values:
-                    menu_dict = {}
-                    menu_components = self.flexible_menu.get_all_components()
-                    menu_inputs = self.flexible_menu.get_all_values_as_inputs()
-                    
-                    # Map menu values to component IDs correctly
-                    value_index = 0
-                    for comp_id, comp_info in menu_components.items():
-                        comp_type = comp_info.get('type', '')
-                        
-                        if comp_type == 'date_range_picker':
-                            # Date range picker has two values: start_date and end_date
-                            if value_index < len(menu_values):
-                                menu_dict[f'{comp_id}_start'] = menu_values[value_index]
-                                value_index += 1
-                            if value_index < len(menu_values):
-                                menu_dict[f'{comp_id}_end'] = menu_values[value_index]  
-                                value_index += 1
-                        else:
-                            # Single value components
-                            if value_index < len(menu_values):
-                                menu_dict[comp_id] = menu_values[value_index]
-                                value_index += 1
-                    
-                    # Apply filters based on menu values
-                    df = self._apply_menu_filters(df, menu_dict)
+                # Get menu values dictionary
+                menu_dict = self._get_menu_values_dict(menu_values) if self.flexible_menu else {}
                 
-                # Create figures directly using plotly express with country coloring
+                # Update each chart using provided update function
                 updated_figures = []
                 for chart_id in chart_ids:
                     try:
-                        figure = self._create_chart_figure(chart_id, df, menu_dict)
-                        updated_figures.append(figure)
+                        updated_figure = update_function(chart_id, store_data=store_data, **menu_dict)
+                        updated_figures.append(updated_figure)
                     except Exception as e:
-                        print(f"Error creating figure for {chart_id}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        updated_figures.append(self._create_empty_figure(f"Error: {str(e)}"))
+                        print(f"Error updating chart {chart_id} from store: {e}")
+                        updated_figures.append(self._create_empty_figure(f"Chart Error: {str(e)}"))
                 
                 return updated_figures
                 
             except Exception as e:
-                print(f"Error in store-based callback: {e}")
-                return [self._create_empty_figure(f"Error: {str(e)}") for _ in range(len(chart_ids))]
+                print(f"Error in store callback: {e}")
+                return [self._create_empty_figure(f"Store Error: {str(e)}") for i in range(len(chart_ids))]
+
+    def _validate_store_data(self, store_data):
+        """
+        Validate store data format and structure.
+        
+        Args:
+            store_data: Raw store data (JSON string or dict)
+            
+        Returns:
+            bool: True if data is valid, False otherwise
+        """
+        if not store_data:
+            return False
+            
+        try:
+            if isinstance(store_data, str):
+                import json
+                data = json.loads(store_data)
+            else:
+                data = store_data
+                
+            # Check if it's a list/array format
+            if isinstance(data, list) and len(data) > 0:
+                return True
+                
+            # Check if it's a dict with data key
+            if isinstance(data, dict) and ('data' in data or len(data) > 0):
+                return True
+                
+            return False
+            
+        except Exception as e:
+            print(f"Store data validation error: {e}")
+            return False
+
+    def _get_menu_values_dict(self, menu_values):
+        """
+        Map menu values to proper component IDs dictionary.
+        
+        Args:
+            menu_values: List of menu values from callback
+            
+        Returns:
+            dict: Dictionary mapping component IDs to their values
+        """
+        if not self.flexible_menu or not menu_values:
+            return {}
+            
+        menu_dict = {}
+        menu_components = self.flexible_menu.get_all_components()
+        
+        value_index = 0
+        for comp_id, comp_info in menu_components.items():
+            comp_type = comp_info.get('type', '')
+            
+            if comp_type == 'date_range_picker':
+                # Date range picker has two values: start_date and end_date
+                if value_index < len(menu_values):
+                    menu_dict[f'{comp_id}_start'] = menu_values[value_index]
+                    value_index += 1
+                if value_index < len(menu_values):
+                    menu_dict[f'{comp_id}_end'] = menu_values[value_index]
+                    value_index += 1
+            else:
+                # Single value components
+                if value_index < len(menu_values):
+                    menu_dict[comp_id] = menu_values[value_index]
+                    value_index += 1
+                    
+        return menu_dict
+
+    def _extract_store_data(self, store_data):
+        """
+        Convert store data to DataFrame with proper date parsing.
+        
+        Args:
+            store_data: Raw store data (JSON string or dict)
+            
+        Returns:
+            pd.DataFrame: Processed DataFrame or empty DataFrame if error
+        """
+        try:
+            if isinstance(store_data, str):
+                df = pd.read_json(store_data, orient='records')
+            elif isinstance(store_data, list):
+                df = pd.DataFrame(store_data)
+            elif isinstance(store_data, dict):
+                if 'data' in store_data:
+                    df = pd.DataFrame(store_data['data'])
+                else:
+                    df = pd.DataFrame([store_data])
+            else:
+                return pd.DataFrame()
+                
+            # Parse date columns if they exist
+            date_columns = ['weekEndingDate', 'date', 'Date', 'week_ending_date']
+            for col in date_columns:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col])
+                    
+            return df
+            
+        except Exception as e:
+            print(f"Error extracting store data: {e}")
+            return pd.DataFrame()
 
     def _apply_menu_filters(self, df, menu_dict):
         """Apply menu-based filters to DataFrame"""
@@ -1926,6 +2212,8 @@ class EnhancedFrameGrid:
         )
         fig.update_layout(title=title, height=400)
         return fig
+
+
 
 
 # Enhanced configuration examples
