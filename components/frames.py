@@ -1750,6 +1750,7 @@ class FrameGrid:
 
 
 class EnhancedFrameGrid:
+
     """
     Enhanced FrameGrid with flexible menu and direct chart targeting.
     """
@@ -1771,7 +1772,7 @@ class EnhancedFrameGrid:
         self.chart_registry = self._build_chart_registry()
 
     def _build_chart_registry(self):
-        """Build registry of all chart_ids and their objects with store/table tracking."""
+        """Build registry of all chart_ids and their objects with callback tracking."""
         registry = {}
         for frame_idx, frame in enumerate(self.frames):
             if hasattr(frame, 'charts'):
@@ -1781,7 +1782,12 @@ class EnhancedFrameGrid:
                         'frame_index': frame_idx,
                         'chart_index': chart_idx,
                         'data_source': self.data_source,
-                        'is_store_mode': self.is_store_mode
+                        'is_store_mode': self.is_store_mode,
+                        'callback_type': None,  # 'store', 'function', or None
+                        'callback_registered': False,
+                        'update_function': None,
+                        'input_ids': [],
+                        'output_ids': []
                     }
         return registry
 
@@ -1974,7 +1980,7 @@ class EnhancedFrameGrid:
         @app.callback(
             [Output(chart_id, 'figure', allow_duplicate=True) for chart_id in chart_ids],
             inputs,
-            prevent_initial_call=False  # Allow initial call to render charts
+            prevent_initial_call='initial_duplicate'  # Allow initial call with duplicates
         )
         def update_charts_from_store(*args):
             """Update charts from store data with menu filtering using custom update function"""
@@ -2026,6 +2032,200 @@ class EnhancedFrameGrid:
             except Exception as e:
                 print(f"Error in store callback: {e}")
                 return [self._create_empty_figure(f"Store Error: {str(e)}") for i in range(len(chart_ids))]
+
+    def register_chart_store_callback(self, app, chart_id: str, update_function, menu_inputs: list = None):
+        """
+        Register store-based callback for a single chart.
+        
+        Args:
+            app: Dash app instance
+            chart_id: Chart ID to register
+            update_function: Function that takes (chart_id, store_data=None, **menu_values) and returns figure
+            menu_inputs: List of menu component IDs to include as inputs (optional)
+        """
+        if chart_id not in self.chart_registry:
+            print(f"Warning: Chart {chart_id} not found in registry")
+            return False
+            
+        if not self.data_source:
+            print(f"Warning: No data_source specified for store callback on {chart_id}")
+            return False
+        
+        # Build inputs
+        inputs = [Input(self.data_source, 'data')]
+        input_ids = [self.data_source]
+        
+        # Add menu inputs if specified
+        if menu_inputs and self.flexible_menu:
+            component_ids = self.flexible_menu.get_component_ids()
+            for menu_comp_id in menu_inputs:
+                if menu_comp_id in component_ids:
+                    full_id = component_ids[menu_comp_id]
+                    inputs.append(Input(full_id, 'value'))
+                    input_ids.append(full_id)
+        
+        # Register callback
+        @app.callback(
+            Output(chart_id, 'figure'),
+            inputs,
+            prevent_initial_call=False
+        )
+        def update_chart_from_store(*args):
+            """Update single chart from store data with menu filtering."""
+            store_data = args[0] if args else None
+            menu_values = args[1:] if len(args) > 1 else []
+            
+            # Build menu values dict
+            menu_dict = {}
+            if menu_inputs and self.flexible_menu:
+                for i, menu_comp_id in enumerate(menu_inputs):
+                    if i < len(menu_values):
+                        menu_dict[menu_comp_id] = menu_values[i]
+            
+            print(f"[STORE] Updating {chart_id}, store_data: {bool(store_data)}, menu: {menu_dict}")
+            
+            try:
+                return update_function(chart_id, store_data=store_data, **menu_dict)
+            except Exception as e:
+                print(f"Error in store callback for {chart_id}: {e}")
+                return self._create_empty_figure(f"Store Error: {str(e)}")
+        
+        # Update registry
+        self.chart_registry[chart_id].update({
+            'callback_type': 'store',
+            'callback_registered': True,
+            'update_function': update_function,
+            'input_ids': input_ids,
+            'output_ids': [chart_id]
+        })
+        
+        print(f"Registered store callback for {chart_id}")
+        return True
+
+    def register_chart_function_callback(self, app, chart_id: str, update_function, 
+                                       input_components: list, trigger_component: str = None):
+        """
+        Register function-based callback for a single chart.
+        
+        Args:
+            app: Dash app instance
+            chart_id: Chart ID to register
+            update_function: Function that takes (chart_id, **values) and returns figure
+            input_components: List of component IDs to use as inputs
+            trigger_component: Component ID that triggers the update (button, etc.)
+        """
+        if chart_id not in self.chart_registry:
+            print(f"Warning: Chart {chart_id} not found in registry")
+            return False
+        
+        if not input_components:
+            print(f"Warning: No input components specified for {chart_id}")
+            return False
+        
+        # Build inputs and states
+        inputs = []
+        states = []
+        input_ids = []
+        
+        component_ids = self.flexible_menu.get_component_ids() if self.flexible_menu else {}
+        
+        for comp_id in input_components:
+            if comp_id in component_ids:
+                full_id = component_ids[comp_id]
+                if trigger_component and comp_id == trigger_component:
+                    inputs.append(Input(full_id, 'n_clicks'))
+                else:
+                    states.append(State(full_id, 'value'))
+                input_ids.append(full_id)
+        
+        if not inputs:
+            print(f"Warning: No trigger inputs found for {chart_id}")
+            return False
+        
+        # Register callback
+        @app.callback(
+            Output(chart_id, 'figure'),
+            inputs,
+            states,
+            prevent_initial_call=True
+        )
+        def update_chart_from_function(*args):
+            """Update single chart from function with menu values."""
+            trigger_value = args[0] if args else 0
+            state_values = args[1:] if len(args) > 1 else []
+            
+            if not trigger_value:
+                return dash.no_update
+            
+            # Build values dict
+            values_dict = {}
+            state_idx = 0
+            
+            for comp_id in input_components:
+                if comp_id != trigger_component:  # Skip trigger component
+                    if state_idx < len(state_values):
+                        values_dict[comp_id] = state_values[state_idx]
+                        state_idx += 1
+            
+            print(f"[FUNCTION] Updating {chart_id}, trigger: {trigger_value}, values: {values_dict}")
+            
+            try:
+                return update_function(chart_id, **values_dict)
+            except Exception as e:
+                print(f"Error in function callback for {chart_id}: {e}")
+                return self._create_empty_figure(f"Function Error: {str(e)}")
+        
+        # Update registry
+        self.chart_registry[chart_id].update({
+            'callback_type': 'function',
+            'callback_registered': True,
+            'update_function': update_function,
+            'input_ids': input_ids,
+            'output_ids': [chart_id]
+        })
+        
+        print(f"Registered function callback for {chart_id}")
+        return True
+
+    def get_chart_ids(self) -> list:
+        """Get all chart IDs in the grid."""
+        return list(self.chart_registry.keys())
+    
+    def get_store_chart_ids(self) -> list:
+        """Get chart IDs registered for store callbacks."""
+        return [chart_id for chart_id, info in self.chart_registry.items() 
+                if info.get('callback_type') == 'store']
+    
+    def get_function_chart_ids(self) -> list:
+        """Get chart IDs registered for function callbacks."""
+        return [chart_id for chart_id, info in self.chart_registry.items() 
+                if info.get('callback_type') == 'function']
+    
+    def get_unregistered_chart_ids(self) -> list:
+        """Get chart IDs that haven't been registered for callbacks."""
+        return [chart_id for chart_id, info in self.chart_registry.items() 
+                if not info.get('callback_registered')]
+    
+    def get_chart_info(self, chart_id: str) -> dict:
+        """Get information about a specific chart."""
+        return self.chart_registry.get(chart_id, {})
+    
+    def print_chart_registry_summary(self):
+        """Print summary of chart registry and callback status."""
+        print("\nChart Registry Summary:")
+        print("=" * 40)
+        
+        for chart_id, info in self.chart_registry.items():
+            callback_type = info.get('callback_type', 'None')
+            registered = info.get('callback_registered', False)
+            status = "[OK]" if registered else "[--]"
+            print(f"{status} {chart_id}: {callback_type}")
+        
+        print(f"\nTotal Charts: {len(self.chart_registry)}")
+        print(f"Store Callbacks: {len(self.get_store_chart_ids())}")
+        print(f"Function Callbacks: {len(self.get_function_chart_ids())}")
+        print(f"Unregistered: {len(self.get_unregistered_chart_ids())}")
+        print("=" * 40)
 
     def _validate_store_data(self, store_data):
         """
