@@ -10,12 +10,12 @@ table_client = ESRTableClient()
 def create_commitment_analysis_layout():
     """Create the ESR Commitment Analysis page with 2 frames for visual clarity."""
 
-    # Frame 0: MY Commitments/Shipments and Sales Backlog
+    # Frame 0: MY Commitments/Shipments and Sales Backlog (store-based)
     frame0_chart_configs = [
         {
             'title': 'MY Commitments/Shipments/Sales (Selectable)',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'currentMYTotalCommitment',  # Default, will be updated by menu
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -24,7 +24,7 @@ def create_commitment_analysis_layout():
         {
             'title': 'Sales Backlog Analysis',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'sales_backlog',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -34,12 +34,12 @@ def create_commitment_analysis_layout():
         }
     ]
 
-    # Frame 1: Commitment Utilization and Fulfillment Rate
+    # Frame 1: Commitment Utilization and Fulfillment Rate (analytics-based)
     frame1_chart_configs = [
         {
             'title': 'Commitment Utilization Rate',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'commitment_utilization',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -50,7 +50,7 @@ def create_commitment_analysis_layout():
         {
             'title': 'Export Fulfillment Rate',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'fulfillment_rate',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -80,16 +80,9 @@ def create_commitment_analysis_layout():
         height="750px"
     )
 
-    # Create menu
-    commitment_menu = FlexibleMenu('esr_commitment_analysis_menu', position='right', width='320px',
+    # Create menu with store-based controls
+    commitment_menu = FlexibleMenu('esr_commitment_analysis_menu', position='right', width='350px',
                                    title='Commitment Analysis Controls')
-
-    commitment_menu.add_dropdown('commodity', 'Commodity', [
-        {'label': 'Cattle', 'value': 'cattle'},
-        {'label': 'Corn', 'value': 'corn'},
-        {'label': 'Wheat', 'value': 'wheat'},
-        {'label': 'Soybeans', 'value': 'soybeans'}
-    ], value='cattle')
 
     # Column selection for Frame 0 Chart 0 (MY Commitments/Shipments/Sales)
     commitment_menu.add_dropdown('commitment_metric', 'Commitment Metric', [
@@ -101,49 +94,32 @@ def create_commitment_analysis_layout():
         {'label': 'Next MY Outstanding Sales', 'value': 'nextMYOutstandingSales'}
     ], value='currentMYTotalCommitment')
 
-    # Year range controls 
-    current_year = pd.Timestamp.now().year
-    commitment_menu.add_dropdown('start_year', 'Start Year', [
-        {'label': str(year), 'value': year}
-        for year in range(current_year - 10, current_year + 2)
-    ], value=current_year - 2)
+    # Country selection mode
+    commitment_menu.add_dropdown('country_display_mode', 'Country Display', [
+        {'label': 'Individual Countries', 'value': 'individual'},
+        {'label': 'Sum Countries', 'value': 'sum'}
+    ], value='individual')
 
-    commitment_menu.add_dropdown('end_year', 'End Year', [
-        {'label': str(year), 'value': year}
-        for year in range(current_year - 10, current_year + 2)
-    ], value=current_year)
+    # Multiple countries selection - will be updated dynamically from store
+    commitment_menu.add_checklist('countries', 'Select Countries', [
+        {'label': 'Korea, South', 'value': 'Korea, South'},
+        {'label': 'Japan', 'value': 'Japan'},
+        {'label': 'China', 'value': 'China'}
+    ], value=['Korea, South', 'Japan'])
 
-    # Country selection for analysis
-    try:
-        top_countries = table_client.get_top_countries('cattle', top_n=10)
-        countries_options = [{'label': country, 'value': country} for country in top_countries]
-        default_country = top_countries[0] if top_countries else 'Korea, South'
-    except:
-        # Fallback if dynamic loading fails
-        countries_options = [
-            {'label': 'Korea, South', 'value': 'Korea, South'},
-            {'label': 'Japan', 'value': 'Japan'},
-            {'label': 'China', 'value': 'China'},
-            {'label': 'Mexico', 'value': 'Mexico'},
-            {'label': 'Canada', 'value': 'Canada'},
-            {'label': 'Taiwan', 'value': 'Taiwan'}
-        ]
-        default_country = 'Korea, South'
-
-    # Single country selection for commitment analysis
-    commitment_menu.add_dropdown('country_selection', 'Country Analysis', countries_options, value=default_country)
-
-    # Multiple countries for aggregated view
-    default_countries = [default_country]
-    if len(countries_options) >= 3:
-        default_countries = [opt['value'] for opt in countries_options[:3]]
-    
-    commitment_menu.add_checklist('countries', 'Countries (Aggregated)', countries_options, value=default_countries)
+    # Date range selector
+    commitment_menu.add_date_range_picker('date_range', 'Date Range', 
+                                        start_date=None, end_date=None)
 
     commitment_menu.add_button('apply', 'Apply Changes')
 
-    # Create enhanced grid with both frames
-    grid = EnhancedFrameGrid(frames=[commitment_frame0, commitment_frame1], flexible_menu=commitment_menu)
+    # Create enhanced grid with both frames and store data source
+    grid = EnhancedFrameGrid(
+        frames=[commitment_frame0, commitment_frame1],
+
+        flexible_menu=commitment_menu,
+        data_source='esr-df-store'  # Use the ESR store from home page
+    )
 
     return grid, grid.generate_layout_with_menu(title="ESR Commitment Analysis")
 

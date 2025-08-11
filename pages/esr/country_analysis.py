@@ -13,23 +13,23 @@ import pandas as pd
 table_client = ESRTableClient()
 
 def create_country_analysis_layout():
-    """Create the ESR Country Analysis page layout."""
+    """Create the ESR Country Analysis page layout with dynamic country generation and market year overlays."""
 
     chart_configs = [
         {
-            'title': 'Country Export Performance (5-Year)',
+            'title': 'Country Export Performance - Market Year Overlays',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
-            'y_columns': ['weeklyExports'],
+            'starting_key': None,  # Will use store data
+            'y_column': 'weeklyExports',
             'x_column': 'weekEndingDate',
             'width': '100%',
             'height': 450
         },
         {
-            'title': 'Outstanding Sales Trend (5-Year)',
+            'title': 'Country Analysis - Current Marketing Year',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
-            'y_columns': ['outstandingSales'],
+            'starting_key': None,  # Will use store data
+            'y_column': 'weeklyExports',
             'x_column': 'weekEndingDate',
             'width': '100%',
             'height': 450
@@ -45,52 +45,56 @@ def create_country_analysis_layout():
         height="900px"
     )
 
-    # Create menu
-    country_menu = FlexibleMenu('esr_country_analysis_menu', position='right', width='300px',
+    # Create menu with enhanced country and market year functionality
+    country_menu = FlexibleMenu('esr_country_analysis_menu', position='right', width='350px',
                                 title='Country Analysis Controls')
 
-    country_menu.add_dropdown('commodity', 'Commodity', [
-        {'label': 'Cattle', 'value': 'cattle'},
-        {'label': 'Corn', 'value': 'corn'},
-        {'label': 'Wheat', 'value': 'wheat'},
-        {'label': 'Soybeans', 'value': 'soybeans'}
-    ], value='cattle')
+    # Metric selection for analysis
+    country_menu.add_dropdown('country_metric', 'Analysis Metric', [
+        {'label': 'Weekly Exports', 'value': 'weeklyExports'},
+        {'label': 'Outstanding Sales', 'value': 'outstandingSales'},
+        {'label': 'Gross New Sales', 'value': 'grossNewSales'},
+        {'label': 'Current MY Net Sales', 'value': 'currentMYNetSales'},
+        {'label': 'Current MY Total Commitment', 'value': 'currentMYTotalCommitment'}
+    ], value='weeklyExports')
 
-    # Year range controls
+    # Country selection mode
+    country_menu.add_dropdown('country_display_mode', 'Country Display', [
+        {'label': 'Individual Countries', 'value': 'individual'},
+        {'label': 'Sum Countries', 'value': 'sum'}
+    ], value='individual')
+
+    # Multiple countries selection - will be updated dynamically from store
+    country_menu.add_checklist('countries', 'Select Countries', [
+        {'label': 'Korea, South', 'value': 'Korea, South'},
+        {'label': 'Japan', 'value': 'Japan'},
+        {'label': 'China', 'value': 'China'}
+    ], value=['Korea, South', 'Japan'])
+
+    # Market year range controls for overlays
     current_year = pd.Timestamp.now().year
-    country_menu.add_dropdown('start_year', 'Start Year', [
+    country_menu.add_dropdown('start_year', 'Start Marketing Year', [
         {'label': str(year), 'value': year}
-        for year in range(current_year - 10, current_year + 1)
-    ], value=current_year - 4)
+        for year in range(current_year - 10, current_year + 2)
+    ], value=current_year - 3)
 
-    country_menu.add_dropdown('end_year', 'End Year', [
+    country_menu.add_dropdown('end_year', 'End Marketing Year', [
         {'label': str(year), 'value': year}
-        for year in range(current_year - 10, current_year + 1)
+        for year in range(current_year - 10, current_year + 2)
     ], value=current_year)
 
-    # Get all countries available in the data
-    try:
-        all_countries = table_client.get_available_countries('cattle')  # Get all countries
-        countries_options = [{'label': country, 'value': country} for country in all_countries]
-        default_country = all_countries[0] if all_countries else 'Korea, South'
-    except:
-        # Fallback if dynamic loading fails
-        countries_options = [
-            {'label': 'Korea, South', 'value': 'Korea, South'},
-            {'label': 'Japan', 'value': 'Japan'},
-            {'label': 'China', 'value': 'China'},
-            {'label': 'Mexico', 'value': 'Mexico'},
-            {'label': 'Canada', 'value': 'Canada'},
-            {'label': 'Taiwan', 'value': 'Taiwan'}
-        ]
-        default_country = 'Korea, South'
-
-    country_menu.add_dropdown('country', 'Select Country', countries_options, value=default_country)
+    # Date range selector
+    country_menu.add_date_range_picker('date_range', 'Date Range', 
+                                     start_date=None, end_date=None)
 
     country_menu.add_button('apply', 'Apply Changes')
 
-    # Create enhanced grid
-    grid = EnhancedFrameGrid(frames=[country_frame], flexible_menu=country_menu)
+    # Create enhanced grid with store data source
+    grid = EnhancedFrameGrid(
+        frames=[country_frame], 
+        flexible_menu=country_menu,
+        data_source='esr-df-store'  # Use the ESR store from home page
+    )
 
     return grid, grid.generate_layout_with_menu(title="ESR Country Performance Analysis")
 

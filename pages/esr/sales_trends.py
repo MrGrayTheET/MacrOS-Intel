@@ -15,12 +15,12 @@ table_client = ESRTableClient()
 def create_sales_trends_layout():
     """Create the ESR Sales Trends page layout."""
 
-    # Chart configurations
+    # Chart configurations - updated to use store data
     chart_configs = [
         {
             'title': 'Weekly Export Trends',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'weeklyExports',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -29,7 +29,7 @@ def create_sales_trends_layout():
         {
             'title': 'Outstanding Sales Analysis',
             'chart_type': 'line',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'outstandingSales',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -38,7 +38,7 @@ def create_sales_trends_layout():
         {
             'title': 'Gross New Sales Trends',
             'chart_type': 'bar',
-            'starting_key': 'cattle/exports/all',
+            'starting_key': None,  # Will use store data
             'y_column': 'grossNewSales',
             'x_column': 'weekEndingDate',
             'width': '100%',
@@ -56,51 +56,98 @@ def create_sales_trends_layout():
         height="1200px"
     )
 
-    # Create menu
-    sales_menu = FlexibleMenu('esr_sales_trends_menu', position='right', width='300px', title='Sales Trends Controls')
+    # Create menu with enhanced controls
+    menu_configs = [
+        # Column selectors for each chart
+        {
+            'type': 'dropdown',
+            'id': 'chart_0_column',
+            'label': 'Chart 1 Metric',
+            'options': [
+                {'label': 'Weekly Exports', 'value': 'weeklyExports'},
+                {'label': 'Outstanding Sales', 'value': 'outstandingSales'},
+                {'label': 'Gross New Sales', 'value': 'grossNewSales'},
+                {'label': 'Current MY Net Sales', 'value': 'currentMYNetSales'},
+                {'label': 'Current MY Total Commitment', 'value': 'currentMYTotalCommitment'}
+            ],
+            'value': 'weeklyExports'
+        },
+        {
+            'type': 'dropdown',
+            'id': 'chart_1_column',
+            'label': 'Chart 2 Metric',
+            'options': [
+                {'label': 'Weekly Exports', 'value': 'weeklyExports'},
+                {'label': 'Outstanding Sales', 'value': 'outstandingSales'},
+                {'label': 'Gross New Sales', 'value': 'grossNewSales'},
+                {'label': 'Current MY Net Sales', 'value': 'currentMYNetSales'},
+                {'label': 'Current MY Total Commitment', 'value': 'currentMYTotalCommitment'}
+            ],
+            'value': 'outstandingSales'
+        },
+        {
+            'type': 'dropdown',
+            'id': 'chart_2_column',
+            'label': 'Chart 3 Metric',
+            'options': [
+                {'label': 'Weekly Exports', 'value': 'weeklyExports'},
+                {'label': 'Outstanding Sales', 'value': 'outstandingSales'},
+                {'label': 'Gross New Sales', 'value': 'grossNewSales'},
+                {'label': 'Current MY Net Sales', 'value': 'currentMYNetSales'},
+                {'label': 'Current MY Total Commitment', 'value': 'currentMYTotalCommitment'}
+            ],
+            'value': 'grossNewSales'
+        },
+        # Country selection with display options
+        {
+            'type': 'checklist',
+            'id': 'countries',
+            'label': 'Select Countries',
+            'options': [
+                {'label': 'Korea, South', 'value': 'Korea, South'},
+                {'label': 'Japan', 'value': 'Japan'},
+                {'label': 'China', 'value': 'China'},
+                {'label': 'Mexico', 'value': 'Mexico'},
+                {'label': 'Canada', 'value': 'Canada'},
+                {'label': 'Taiwan', 'value': 'Taiwan'}
+            ],
+            'value': ['Korea, South', 'Japan', 'China']
+        },
+        # Country display mode
+        {
+            'type': 'radio_items',
+            'id': 'country_display_mode',
+            'label': 'Country Display Mode',
+            'options': [
+                {'label': 'Individual Countries', 'value': 'individual'},
+                {'label': 'Sum All Selected', 'value': 'sum'}
+            ],
+            'value': 'individual'
+        },
+        # Date range controls
+        {
+            'type': 'date_range_picker',
+            'id': 'date_range',
+            'label': 'Date Range',
+            'start_date': (pd.Timestamp.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d'),
+            'end_date': pd.Timestamp.now().strftime('%Y-%m-%d')
+        }
+    ]
 
-    sales_menu.add_dropdown('commodity', 'Commodity', [
-        {'label': 'Cattle', 'value': 'cattle'},
-        {'label': 'Corn', 'value': 'corn'},
-        {'label': 'Wheat', 'value': 'wheat'},
-        {'label': 'Soybeans', 'value': 'soybeans'}
-    ], value='cattle')
+    sales_menu = FlexibleMenu(
+        'esr_sales_trends_menu', 
+        position='right', 
+        width='320px', 
+        title='Sales Trends Controls',
+        component_configs=menu_configs
+    )
 
-    # Year range controls
-    current_year = pd.Timestamp.now().year
-    sales_menu.add_dropdown('start_year', 'Start Year', [
-        {'label': str(year), 'value': year}
-        for year in range(current_year - 10, current_year + 1)
-    ], value=current_year - 2)
-
-    sales_menu.add_dropdown('end_year', 'End Year', [
-        {'label': str(year), 'value': year}
-        for year in range(current_year - 10, current_year + 1)
-    ], value=current_year)
-
-    # Get dynamic top countries for default commodity
-    try:
-        top_countries = table_client.get_top_countries('cattle', top_n=10)
-        countries_options = [{'label': country, 'value': country} for country in top_countries]
-        default_countries = top_countries[:3] if len(top_countries) >= 3 else top_countries
-    except:
-        # Fallback if dynamic loading fails
-        countries_options = [
-            {'label': 'Korea, South', 'value': 'Korea, South'},
-            {'label': 'Japan', 'value': 'Japan'},
-            {'label': 'China', 'value': 'China'},
-            {'label': 'Mexico', 'value': 'Mexico'},
-            {'label': 'Canada', 'value': 'Canada'},
-            {'label': 'Taiwan', 'value': 'Taiwan'}
-        ]
-        default_countries = ['Korea, South', 'Japan', 'China']
-
-    sales_menu.add_checklist('countries', 'Countries to Display', countries_options, value=default_countries)
-
-    sales_menu.add_button('apply', 'Apply Changes')
-
-    # Create enhanced grid
-    grid = EnhancedFrameGrid(frames=[sales_frame], flexible_menu=sales_menu)
+    # Create enhanced grid with store data source
+    grid = EnhancedFrameGrid(
+        frames=[sales_frame], 
+        flexible_menu=sales_menu, 
+        data_source='esr-df-store'
+    )
 
 
     return grid, grid.generate_layout_with_menu(title="ESR Sales Trends Analysis")
