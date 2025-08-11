@@ -7,7 +7,7 @@ Time series analysis and commodity-specific analytics for the commodities dashbo
 Available modules:
 - timeseries_analysis: General time series analysis toolkit
 - commodity_analytics: Specialized ESR and commodity analysis
-- seasonal: Basic seasonal adjustment utilities (legacy)
+- seasonal: Basic seasonal index utilities
 
 Quick start examples:
 
@@ -25,6 +25,7 @@ stationarity = analyzer.test_stationarity('price')
 
 from .timeseries_analysis import TimeSeriesAnalyzer
 from .commodity_analytics import ESRAnalyzer, CommodityPriceAnalyzer, create_esr_analyzer
+from .seasonal import create_seasonal_index, seasonal_difference
 
 # Utility functions
 from .commodity_analytics import compare_country_exports, marketing_year_comparison
@@ -35,7 +36,9 @@ __all__ = [
     'CommodityPriceAnalyzer',
     'create_esr_analyzer',
     'compare_country_exports',
-    'marketing_year_comparison'
+    'marketing_year_comparison',
+    'create_seasonal_index',
+    'seasonal_difference'
 ]
 
 __version__ = '1.0.0'
