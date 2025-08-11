@@ -117,11 +117,24 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
         # Standardize column names if needed
         data_copy = self._standardize_esr_columns(data)
         
-        # Initialize parent class
+        # Initialize parent class with only numeric value columns
+        numeric_esr_columns = [
+            self.ESR_COLUMNS['weekly_exports'],
+            self.ESR_COLUMNS['outstanding_sales'],
+            self.ESR_COLUMNS['gross_new_sales'],
+            self.ESR_COLUMNS['current_my_net_sales'],
+            self.ESR_COLUMNS['current_my_total_commitment'],
+            self.ESR_COLUMNS['next_my_outstanding_sales'],
+            self.ESR_COLUMNS['next_my_net_sales']
+        ]
+        
+        # Filter to only include columns that actually exist in the data
+        available_numeric_columns = [col for col in numeric_esr_columns if col in data_copy.columns]
+        
         super().__init__(
             data_copy, 
             date_column=self.ESR_COLUMNS['date'],
-            value_columns=list(self.ESR_COLUMNS.values())[:-3]  # Exclude non-numeric columns
+            value_columns=available_numeric_columns
         )
         
         # Add derived columns
