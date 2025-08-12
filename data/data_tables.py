@@ -11,6 +11,13 @@ import asyncio
 import aiohttp
 from typing import List, Dict, Optional, Tuple
 
+# Google Drive integration
+try:
+    from .google_drive_client import GoogleDriveTableClient, create_gdrive_config_template
+    HAS_GDRIVE_INTEGRATION = True
+except ImportError:
+    HAS_GDRIVE_INTEGRATION = False
+
 
 # Import from config instead of using dotenv directly
 try:
@@ -101,7 +108,7 @@ class TableClient:
     """Base class for table data access"""
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None, api_data_col=None,
-                 rename_on_load=False):
+                 rename_on_load=False, gdrive_config=None):
         self.client = client
         self.data_folder = Path(data_folder)
         self.table_db = Path(self.data_folder, db_file_name)
@@ -116,6 +123,20 @@ class TableClient:
             self.prefix = key_prefix
 
         self.client_params = {}
+
+        # Google Drive integration
+        self.gdrive_client = None
+        self.gdrive_enabled = False
+        if gdrive_config and HAS_GDRIVE_INTEGRATION:
+            try:
+                self.gdrive_client = GoogleDriveTableClient(gdrive_config)
+                self.gdrive_enabled = True
+                print(f"Google Drive integration enabled for {db_file_name}")
+            except Exception as e:
+                print(f"Warning: Could not initialize Google Drive client: {e}")
+                self.gdrive_enabled = False
+        elif gdrive_config and not HAS_GDRIVE_INTEGRATION:
+            print("Warning: Google Drive config provided but integration not available. Install google-api-python-client.")
 
         if map_file:
             try:
@@ -335,6 +356,165 @@ class TableClient:
             return self.get_keys(item, use_prefix=True, use_simple_name=self.rename)
         elif isinstance(item, str):
             return self.get_key(item, use_prefix=True, use_simple_name=self.rename)
+    
+    # Google Drive Integration Methods
+    
+    def sync_from_gdrive(self, file_identifier: Optional[str] = None, force_download: bool = False):
+        """
+        Sync .h5 data from Google Drive to local storage.
+        
+        Args:
+            file_identifier: Specific file to sync (None for all mapped files)
+            force_download: Force re-download even if cached
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return
+        
+        if file_identifier:
+            # Sync specific file
+            try:
+                local_path = self.gdrive_client.download_h5_file(file_identifier, force_download=force_download)
+                
+                # Copy to our table database location
+                import shutil
+                shutil.copy2(local_path, self.table_db)
+                print(f"Synced {file_identifier} to local database")
+                
+            except Exception as e:
+                print(f"Error syncing file {file_identifier}: {e}")
+        else:
+            # Sync all mapped files
+            for logical_name, file_id in self.gdrive_client.file_mappings.items():
+                try:
+                    local_path = self.gdrive_client.download_h5_file(file_id, force_download=force_download)
+                    print(f"Downloaded {logical_name} ({file_id}) to {local_path}")
+                except Exception as e:
+                    print(f"Error syncing {logical_name}: {e}")
+    
+    def get_key_from_gdrive(self, key: str, file_identifier: Optional[str] = None, 
+                           use_simple_name: bool = True, force_download: bool = False):
+        """
+        Get data key directly from Google Drive .h5 file.
+        
+        Args:
+            key: HDF5 key to retrieve
+            file_identifier: Google Drive file ID or logical name
+            use_simple_name: Whether to rename columns
+            force_download: Force re-download even if cached
+            
+        Returns:
+            DataFrame with requested data
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled, falling back to local")
+            return self.get_key(key, use_simple_name=use_simple_name)
+        
+        try:
+            # Use the database file mapping if no specific file provided
+            if file_identifier is None:
+                # Try to find the file identifier from mapping
+                # This assumes the database name maps to a Google Drive file
+                db_name = self.table_db.stem  # Get filename without extension
+                file_identifier = self.gdrive_client.file_mappings.get(db_name)
+                
+                if not file_identifier:
+                    print(f"No Google Drive mapping found for {db_name}, using local file")
+                    return self.get_key(key, use_simple_name=use_simple_name)
+            
+            # Construct the full key path
+            if hasattr(self, 'prefix') and self.prefix:
+                full_key = f'{self.prefix}/{key}'
+            else:
+                full_key = key
+            
+            # Ensure key starts with '/' for HDF5 compatibility
+            if not full_key.startswith('/'):
+                full_key = f'/{full_key}'
+            
+            # Load data from Google Drive
+            data = self.gdrive_client.load_h5_data(file_identifier, full_key, force_download=force_download)
+            
+            # Apply column renaming if requested
+            if use_simple_name and not data.empty:
+                col_value = data.columns[0] if self.data_col is None else self.data_col
+                if col_value in data.columns:
+                    new_name = key_to_name(key)
+                    data = data.rename({col_value: new_name}, axis=1)
+            
+            return data
+            
+        except Exception as e:
+            print(f"Error getting key {key} from Google Drive: {e}")
+            print("Falling back to local file")
+            return self.get_key(key, use_simple_name=use_simple_name)
+    
+    def list_gdrive_files(self):
+        """List available .h5 files on Google Drive."""
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return []
+        
+        try:
+            files = self.gdrive_client.get_available_files()
+            print(f"Found {len(files)} .h5 files on Google Drive:")
+            for file_info in files:
+                size_mb = int(file_info.get('size', 0)) / (1024 * 1024)
+                print(f"  - {file_info['name']} ({size_mb:.1f} MB) - ID: {file_info['id']}")
+            return files
+        except Exception as e:
+            print(f"Error listing Google Drive files: {e}")
+            return []
+    
+    def get_gdrive_keys(self, file_identifier: str):
+        """
+        Get available keys from a Google Drive .h5 file.
+        
+        Args:
+            file_identifier: Google Drive file ID or logical name
+            
+        Returns:
+            List of available HDF5 keys
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return []
+        
+        try:
+            return self.gdrive_client.get_h5_keys(file_identifier)
+        except Exception as e:
+            print(f"Error getting keys from Google Drive file {file_identifier}: {e}")
+            return []
+    
+    def clear_gdrive_cache(self, older_than_days: Optional[int] = None):
+        """
+        Clear Google Drive cache files.
+        
+        Args:
+            older_than_days: Only clear files older than this many days (None for all)
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return
+        
+        try:
+            self.gdrive_client.gdrive_client.clear_cache(older_than_days)
+        except Exception as e:
+            print(f"Error clearing Google Drive cache: {e}")
+    
+    def get_gdrive_status(self):
+        """Get status of Google Drive integration."""
+        status = {
+            'enabled': self.gdrive_enabled,
+            'has_integration': HAS_GDRIVE_INTEGRATION,
+            'client_initialized': self.gdrive_client is not None,
+        }
+        
+        if self.gdrive_enabled and self.gdrive_client:
+            status['file_mappings'] = self.gdrive_client.file_mappings
+            status['cache_dir'] = str(self.gdrive_client.gdrive_client.cache_dir)
+        
+        return status
 
 
 

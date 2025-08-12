@@ -98,9 +98,9 @@ def create_sales_trends_layout():
             ],
             'value': 'grossNewSales'
         },
-        # Country selection with display options
+        # Country selection with multi-select dropdown
         {
-            'type': 'checklist',
+            'type': 'dropdown',
             'id': 'countries',
             'label': 'Select Countries',
             'options': [
@@ -111,7 +111,8 @@ def create_sales_trends_layout():
                 {'label': 'Canada', 'value': 'Canada'},
                 {'label': 'Taiwan', 'value': 'Taiwan'}
             ],
-            'value': ['Korea, South', 'Japan', 'China']
+            'value': ['Korea, South', 'Japan', 'China'],
+            'multi': True
         },
         # Country display mode
         {

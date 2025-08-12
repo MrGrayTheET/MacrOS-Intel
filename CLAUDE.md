@@ -283,7 +283,7 @@ def function_update_function(chart_id, **input_values):
 ```
 
 ## Testing
-
+- Use only UTF-8 and common characters when creating tests. Emojis and unicode result in charmap errors
 ### Framework Tests
 - `test_individual_chart_callbacks.py`: Tests individual chart callback registration
 - `test_multi_chart_callbacks.py`: Tests multi-chart callback registration with various scenarios
@@ -319,3 +319,5 @@ python test_multi_chart_callbacks.py
 - Register charts individually for fine-grained control
 - Use multi-chart registration for coordinated updates
 - Leverage chart registry for status tracking and debugging
+- Next we need to update all figures to return as a list. The schema, for some reason, expects a list every output (which is fine, just remember it when creating callbacks)
+- Only use `utf-8` when rendering characters. Some unicode characters are not included in the termina;

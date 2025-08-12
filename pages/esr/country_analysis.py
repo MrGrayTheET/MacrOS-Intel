@@ -65,11 +65,11 @@ def create_country_analysis_layout():
     ], value='individual')
 
     # Multiple countries selection - will be updated dynamically from store
-    country_menu.add_checklist('countries', 'Select Countries', [
+    country_menu.add_dropdown('countries', 'Select Countries', [
         {'label': 'Korea, South', 'value': 'Korea, South'},
         {'label': 'Japan', 'value': 'Japan'},
         {'label': 'China', 'value': 'China'}
-    ], value=['Korea, South', 'Japan'])
+    ], value=['Korea, South', 'Japan'], multi=True)
 
     # Market year range controls for overlays
     current_year = pd.Timestamp.now().year

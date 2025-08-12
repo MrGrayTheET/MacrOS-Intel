@@ -101,11 +101,11 @@ def create_commitment_analysis_layout():
     ], value='individual')
 
     # Multiple countries selection - will be updated dynamically from store
-    commitment_menu.add_checklist('countries', 'Select Countries', [
+    commitment_menu.add_dropdown('countries', 'Select Countries', [
         {'label': 'Korea, South', 'value': 'Korea, South'},
         {'label': 'Japan', 'value': 'Japan'},
         {'label': 'China', 'value': 'China'}
-    ], value=['Korea, South', 'Japan'])
+    ], value=['Korea, South', 'Japan'], multi=True)
 
     # Date range selector
     commitment_menu.add_date_range_picker('date_range', 'Date Range', 

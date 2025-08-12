@@ -13,7 +13,7 @@ from callbacks.esr import (
     sales_trends_chart_update,
     country_analysis_chart_update, 
     comparative_analysis_chart_update,
-    seasonal_analysis_chart_update,
+    unified_seasonal_analysis_update,
     commitment_metric_chart,
     commitment_analytics_chart
 )
@@ -45,7 +45,7 @@ layout_dict = {
     'seasonal_analysis': {
         'layout': seasonal_analysis_layout,
         'grid': seasonal_grid,
-        'callback_fn': seasonal_analysis_chart_update
+        'callback_fn': None  # Using individual callbacks instead
     }
 }
 
@@ -116,32 +116,45 @@ def register_esr_callbacks():
     
     print(f"Registered single multi-chart store callback for {len(country_chart_ids)} country analysis charts")
     
-    # Register store-based callbacks for seasonal analysis
+    # Register individual callbacks for seasonal analysis charts
     seasonal_grid = layout_dict['seasonal_analysis']['grid']
-    seasonal_callback_fn = layout_dict['seasonal_analysis']['callback_fn']
     
     # Get all chart IDs for seasonal analysis
     seasonal_chart_ids = seasonal_grid.get_chart_ids()
     
-    # Register single multi-chart store callback for all seasonal analysis charts
+    # Register unified callback for both seasonal analysis charts
     seasonal_grid.register_chart_store_callback(
         app=app,
-        chart_id=seasonal_chart_ids,  # Pass all chart IDs as a list
-        update_function=seasonal_callback_fn,
-        menu_inputs=['seasonal_metric', 'countries', 'country_display_mode', 'overlay_market_year', 
-                    'difference_from_year', 'start_year', 'end_year', 'date_range']
+        chart_id=seasonal_chart_ids,  # Pass all chart IDs for multi-chart callback
+        update_function=unified_seasonal_analysis_update,
+        menu_inputs=['seasonal_metric', 'countries', 'country_display_mode', 'selected_market_year', 'start_year', 'end_year', 'date_range']
     )
     
-    print(f"Registered single multi-chart store callback for {len(seasonal_chart_ids)} seasonal analysis charts")
+    print(f"Registered unified callback for {len(seasonal_chart_ids)} seasonal analysis charts")
+    if len(seasonal_chart_ids) >= 2:
+        print(f"  - Overlay chart: {seasonal_chart_ids[0]}")
+        print(f"  - Differenced chart: {seasonal_chart_ids[1]}")
+    else:
+        print(f"  - Chart IDs: {seasonal_chart_ids}")
+    
+    print("Seasonal analysis table callback removed")
     
     # For other pages, keep using traditional callbacks for now
+    print("Checking for remaining pages that need traditional callback registration...")
     for page_name, page_config in layout_dict.items():
         if page_name in ['sales_trends', 'commitment_analysis', 'country_analysis', 'seasonal_analysis']:
+            print(f"  - Skipping {page_name} (already handled with store-based callbacks)")
             continue  # Already handled above
             
-        grid = page_config['grid']
         callback_fn = page_config['callback_fn']
-        grid.create_menu_callbacks(app, callback_fn)
+        if callback_fn is not None:
+            print(f"  - Registering traditional callbacks for {page_name}")
+            grid = page_config['grid']
+            grid.create_menu_callbacks(app, callback_fn)
+        else:
+            print(f"  - Skipping {page_name} (no callback function defined)")
+    
+    print("Callback registration completed!")
 
 
 def layout(page_name='sales_trends'):
@@ -205,6 +218,22 @@ def layout(page_name='sales_trends'):
                 ],
                 value='cattle',
                 style={'backgroundColor': '#333333', 'color': '#e8e8e8'}
+            )
+        ], style={'marginBottom': '20px', 'maxWidth': '300px'}),
+        
+        # Marketing Year Information Display
+        html.Div([
+            html.Label("Marketing Year Period:", style={'color': '#e8e8e8', 'marginBottom': '5px'}),
+            html.Div(
+                id='esr-marketing-year-display',
+                children="September - August",
+                style={
+                    'color': '#e8e8e8', 
+                    'backgroundColor': '#333333',
+                    'padding': '8px 12px',
+                    'borderRadius': '4px',
+                    'border': '1px solid #555555'
+                }
             )
         ], style={'marginBottom': '20px', 'maxWidth': '300px'})
     ], style={'backgroundColor': '#222222', 'padding': '15px', 'marginBottom': '20px', 'borderRadius': '5px'})
@@ -369,7 +398,7 @@ def update_sales_trends_countries_options(options_data):
             {'label': 'Taiwan', 'value': 'Taiwan'}
         ]
         return default_options, ['Korea, South', 'Japan', 'China']
-    
+
     countries_options = options_data['countries']
     # Set default to first 3 countries
     default_values = [opt['value'] for opt in countries_options[:3]]
@@ -423,6 +452,28 @@ def update_seasonal_analysis_countries_options(options_data):
     # Set default to first 3 countries
     default_values = [opt['value'] for opt in countries_options[:3]]
     return countries_options, default_values
+
+# Marketing Year Display Callback
+@callback(
+    Output('esr-marketing-year-display', 'children'),
+    Input('esr-commodity-dd', 'value'),
+    prevent_initial_call=False
+)
+def update_marketing_year_display(commodity):
+    """Update marketing year display based on selected commodity"""
+    if not commodity:
+        return "September - August"
+    
+    # Define marketing year periods for different commodity types
+    marketing_year_periods = {
+        'cattle': 'January - December',
+        'hogs': 'December - November', 
+        'corn': 'September - August',
+        'wheat': 'June - May',
+        'soybeans': 'September - August'
+    }
+    
+    return marketing_year_periods.get(commodity, 'September - August')
 
 # Register callbacks when module is imported
 register_esr_callbacks()

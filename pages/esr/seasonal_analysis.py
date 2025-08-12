@@ -18,20 +18,22 @@ def create_seasonal_analysis_layout(data_source=None):
     # Chart configurations for seasonal patterns - updated to use store data
     chart_configs = [
         {
-            'title': 'Seasonal Export Patterns',
+            'title': 'Multi-Year Seasonal Overlay',
             'chart_type': 'line',
             'starting_key': None,  # Will use store data
             'y_column': 'weeklyExports',
-            'x_column': 'weekEndingDate',
+            'x_column': 'my_week',
             'width': '100%',
-            'height': 400
+            'height': 400,
+            'use_analytics': True,
+            'analytics_function': 'seasonal_overlay_analysis'
         },
         {
-            'title': 'Average Seasonal Pattern',
-            'chart_type': 'area',
+            'title': 'Detailed Seasonal Analysis',
+            'chart_type': 'line',
             'starting_key': None,  # Will use store data
             'y_column': 'weeklyExports',
-            'x_column': 'week_of_year',
+            'x_column': 'my_week',
             'width': '100%',
             'height': 400,
             'use_analytics': True,
@@ -65,9 +67,9 @@ def create_seasonal_analysis_layout(data_source=None):
             ],
             'value': 'weeklyExports'
         },
-        # Country selection with multi-select capability
+        # Country selection with multi-select dropdown
         {
-            'type': 'checklist',
+            'type': 'dropdown',
             'id': 'countries',
             'label': 'Select Countries',
             'options': [
@@ -78,7 +80,8 @@ def create_seasonal_analysis_layout(data_source=None):
                 {'label': 'Canada', 'value': 'Canada'},
                 {'label': 'Taiwan', 'value': 'Taiwan'}
             ],
-            'value': ['Korea, South', 'Japan', 'China']
+            'value': ['Korea, South', 'Japan', 'China'],
+            'multi': True
         },
         # Country display mode
         {
@@ -91,27 +94,16 @@ def create_seasonal_analysis_layout(data_source=None):
             ],
             'value': 'individual'
         },
-        # Market year overlay selection
+        # Selected market year for detailed analysis (bottom chart)
         {
             'type': 'dropdown',
-            'id': 'overlay_market_year',
-            'label': 'Overlay Market Year',
+            'id': 'selected_market_year',
+            'label': 'Market Year for Analysis',
             'options': [
                 {'label': str(year), 'value': year}
                 for year in range(pd.Timestamp.now().year - 5, pd.Timestamp.now().year + 1)
             ],
             'value': pd.Timestamp.now().year
-        },
-        # Difference analysis selector
-        {
-            'type': 'dropdown',
-            'id': 'difference_from_year',
-            'label': 'Show Difference From Year',
-            'options': [
-                {'label': str(year), 'value': year}
-                for year in range(pd.Timestamp.now().year - 5, pd.Timestamp.now().year + 1)
-            ],
-            'value': None
         },
         # Year range controls for seasonal analysis
         {
@@ -159,33 +151,10 @@ def create_seasonal_analysis_layout(data_source=None):
         data_source='esr-df-store'  # Use the ESR store from home page
     )
 
-    # Create layout with seasonal summary table
+    # Create layout without seasonal summary table
     main_layout = grid.generate_layout_with_menu(title="ESR Seasonal Analysis")
-    
-    # Add seasonal summary table below the charts
-    seasonal_table = dag.AgGrid(
-        id="esr_seasonal_analysis_table_0",
-        columnDefs=[
-            {"headerName": "Commodity", "field": "commodity", "width": 120},
-            {"headerName": "Marketing Year", "field": "my_start", "width": 100},
-            {"headerName": "Peak Weeks", "field": "peak_weeks", "width": 120},
-            {"headerName": "Low Weeks", "field": "low_weeks", "width": 120},
-            {"headerName": "Seasonality Strength", "field": "seasonality", "width": 140, "type": "numericColumn"},
-        ],
-        rowData=[],
-        style={"height": "200px"},
-        className="ag-theme-alpine-dark"
-    )
 
-    # Combine main layout with table
-    combined_layout = html.Div([
-        main_layout,
-        html.Hr(style={'margin': '30px 0', 'borderColor': '#444'}),
-        html.H4("Seasonal Summary", style={'color': '#e8e8e8', 'textAlign': 'center', 'marginBottom': '20px'}),
-        seasonal_table
-    ])
-
-    return grid, combined_layout
+    return grid, main_layout
 
 # Create default instances
 grid, layout = create_seasonal_analysis_layout()

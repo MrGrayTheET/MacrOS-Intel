@@ -578,6 +578,7 @@ class FlexibleMenu:
             'value': value
         })
         return self
+    
 
     def generate_menu_div(self) -> html.Div:
         """Generate the menu div."""
@@ -605,7 +606,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.Dropdown(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         options=comp['options'],
                         value=comp['value'],
                         multi=comp['multi'],
@@ -622,7 +623,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.Checklist(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         options=comp['options'],
                         value=comp['value'],
                         style={'color': '#fff'}
@@ -646,7 +647,7 @@ class FlexibleMenu:
                 element = html.Div([
                     html.Button(
                         comp['label'],
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         n_clicks=0,
                         style=button_style
                     )
@@ -661,7 +662,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.DatePickerRange(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         start_date=comp['start_date'],
                         end_date=comp['end_date'],
                         display_format='YYYY-MM-DD',
@@ -678,7 +679,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.RangeSlider(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         min=comp['min'],
                         max=comp['max'],
                         value=comp['value'],
@@ -696,7 +697,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.Input(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         type=comp['input_type'],
                         value=comp['value'],
                         placeholder=comp['placeholder'],
@@ -722,12 +723,13 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.RadioItems(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         options=comp['options'],
                         value=comp['value'],
                         style={'color': '#fff'}
                     )
                 ], style={'marginBottom': '20px'})
+            
 
             menu_elements.append(element)
 
@@ -748,7 +750,7 @@ class FlexibleMenu:
 
     def get_component_ids(self) -> Dict[str, str]:
         """Get all component IDs for callback registration."""
-        return {comp['id']: f"{self.menu_id}_{comp['id']}" for comp in self.components}
+        return {comp['id']: f"{self.menu_id}-{comp['id']}" for comp in self.components}
     
     def get_all_components(self) -> Dict[str, Dict]:
         """Get all components with their metadata."""
@@ -759,7 +761,7 @@ class FlexibleMenu:
         from dash import Input
         inputs = []
         for comp in self.components:
-            component_id = f"{self.menu_id}_{comp['id']}"
+            component_id = f"{self.menu_id}-{comp['id']}"
             if comp['type'] == 'dropdown':
                 inputs.append(Input(component_id, 'value'))
             elif comp['type'] == 'checklist':

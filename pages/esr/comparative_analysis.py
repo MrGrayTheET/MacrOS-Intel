@@ -101,7 +101,7 @@ def create_comparative_analysis_layout():
         ]
         default_countries = ['Korea, South', 'Japan', 'China']
 
-    comparative_menu.add_checklist('countries', 'Countries to Display', countries_options, value=default_countries)
+    comparative_menu.add_dropdown('countries', 'Countries to Display', countries_options, value=default_countries, multi=True)
 
     comparative_menu.add_button('apply', 'Apply Changes')
 

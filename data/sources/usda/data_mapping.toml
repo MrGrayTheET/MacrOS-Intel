@@ -13,5 +13,10 @@ cows = 'CATTLE, COWS - PRICE RECEIVED, MEASURED IN $ / CWT'
 [hogs.supply]
 production = 'PORK, COLD STORAGE, FROZEN - STOCKS, MEASURED IN LB'
 
+
+[corn.consumption]
+used_for_alcohol = "CORN, FOR FUEL ALCOHOL - USAGE, MEASURED IN BU"
+
+
 [fas]
 attrs = ['imports', 'exports', 'domestic_consumption']
