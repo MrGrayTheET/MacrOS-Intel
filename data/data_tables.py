@@ -40,12 +40,11 @@ except ImportError:
 # Import external APIs
 try:
     from myeia import API
-    from nasspython.nass_api import nass_param, nass_data
+    from data.sources.usda.api_wrappers.usda_quickstats import QuickStatsClient
 except ImportError as e:
     print(f"Warning: Could not import external APIs: {e}")
     API = None
-    nass_param = None
-    nass_data = None
+    QuickStatsClient = None
 
 # Import local modules with proper paths
 try:
@@ -83,7 +82,11 @@ except ImportError:
 
     def key_to_name(table_key):
         key_parts = table_key.rsplit('/')
-        name = f"{key_parts[-1]}_{key_parts[-2]}"
+        if len(key_parts) >= 2:
+            name = f"{key_parts[-1]}_{key_parts[-2]}"
+        else:
+            # Single part key - just use the key itself
+            name = key_parts[-1]
         return name
 
 # Store folder
@@ -349,6 +352,59 @@ class TableClient:
         except Exception as e:
             print(f"Error listing tables: {e}")
             return []
+
+    def update_data(self, key, data, use_prefix=True, metadata=None):
+        """
+        Generic update method for storing data to any key in the HDF5 store.
+        
+        Args:
+            key (str): Storage key for the data (e.g., 'usage/fsi', 'psd/summary')
+            data (pd.DataFrame): Data to store
+            use_prefix (bool): Whether to use the client's prefix for the key
+            metadata (dict): Optional metadata to store with the data
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if data is None or data.empty:
+                print(f"Warning: No data provided for key {key}")
+                return False
+            
+            # Construct the full key path
+            if hasattr(self, 'prefix') and self.prefix and use_prefix:
+                full_key = f'{self.prefix}/{key}'
+            else:
+                full_key = key
+            
+            # Ensure key starts with '/' for HDF5 compatibility
+            if not full_key.startswith('/'):
+                full_key = f'/{full_key}'
+            
+            # Store the data using HDF5
+            data.to_hdf(self.table_db, key=full_key, mode='a', format='table', data_columns=True)
+            
+            print(f"Successfully stored {len(data)} rows to key: {full_key}")
+            print(f"Database: {self.table_db}")
+            
+            # Store metadata if provided
+            if metadata:
+                metadata_key = f"{full_key}_metadata"
+                try:
+                    import json
+                    metadata_df = pd.DataFrame([metadata])
+                    metadata_df.to_hdf(self.table_db, key=metadata_key, mode='a', format='table')
+                    print(f"Stored metadata to: {metadata_key}")
+                except Exception as e:
+                    print(f"Warning: Could not store metadata: {e}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error storing data to key {key}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def __getitem__(self, item):
         """Allow dict-like access"""
@@ -655,60 +711,100 @@ class EIATable(TableClient):
         self.commodity = self.prefix = commodity
 
 
+# Initialize QuickStats client
+if QuickStatsClient:
+    _quickstats_client = QuickStatsClient()
+else:
+    _quickstats_client = None
+
 nass_info = {
     'key': os.getenv('NASS_TOKEN'),
-    'client': lambda x: nass_data(os.getenv('NASS_TOKEN'), **x)}
+    'client': lambda x: _quickstats_client.query_df_numeric(**x) if _quickstats_client else None}
 
 # National Agricultural Stats
 class NASSTable(TableClient):
     with open(Path(PROJECT_ROOT, 'data', 'sources','usda' ,'data_mapping.toml')) as map_file:
         table_map = toml.load(map_file)
 
-    def __init__(self, source_desc,
-
-                 sector_desc,
-                 group_desc,
-                 commodity_desc, freq_desc=None, prefix=None):
+    def __init__(self,
+                 prefix=None):
         self.prefix = self.table = prefix
         super().__init__(nass_info['client'], data_folder=store_folder, db_file_name="nass_agri_stats.hd5",
                          api_data_col='Value', key_prefix=prefix, rename_on_load=True)
-        self.client_params = {
-            'source_desc': source_desc,
-            'sector_desc': sector_desc,
-            'group_desc': group_desc,
-            'commodity_desc': commodity_desc,
-            'agg_level_desc': 'NATIONAL',
-            'domain_desc': 'TOTAL',
-        }
 
-        self.mapping = self.table_map[prefix]
-
-        if freq_desc is not None:
-            self.client_params.update({'freq_desc': freq_desc})
+        self.mapping = self.table_map[prefix] if prefix else self.table_map
 
         return
 
-    def get_descs(self, param_value='short_desc'):
 
-        return nass_param(param=param_value, **self.client_params)
+    def get_descs(self,
+                  param_value='short_desc'):
 
-    def update_table(self, short_desc, freq_desc_preference='MONTHLY', key=None, agg_level=None, state=None,
-                     county=None, ):
+        if _quickstats_client is None:
+            raise RuntimeError("QuickStatsClient not available")
+        return _quickstats_client.get_param_values(param_value)
+
+    def api_update(self, short_desc,
+                   key=None,
+                   commodity_desc=None,
+                   freq_desc_preference='MONTHLY',
+                   agg_level=None,
+                   year_ge:str=None,
+                   year_lt:str=None,
+                   state = None,
+                   county = None,
+                   year = None,
+                   use_prefix=False, **filters):
+        ''' Used to write tables to the store using USDA's NASS API '''
         agg_level = 'NATIONAL' if agg_level is None else agg_level
 
-        params = {
-            'short_desc': short_desc,
-            'agg_level_desc': agg_level
-        }
+        if not commodity_desc:
+            commodity_desc = short_desc.split(' ')[0]
+        if commodity_desc not in ["CATTLE", "BEEF", "HOGS", "PORK"]:
+            sector_desc = "CROPS"
+            group_desc = "FIELD CROPS"
+        else:
+            sector_desc, group_desc = "ANIMALS & PRODUCTS", "LIVESTOCK"
 
-        if agg_level != 'NATIONAL':
+        params = {}
+        params.update({
+            "source_desc": "SURVEY",
+            'sector_desc':sector_desc.upper(),
+            'group_desc': group_desc.upper(),
+            "commodity_desc": commodity_desc.upper(),
+            'agg_level_desc': agg_level.upper(),
+            'short_desc': short_desc.upper(),
+            'domain_desc': 'TOTAL',
+
+        })
+
+        if state is not None:
             params.update({
                 'state_name': state,
-                'county_name': county
+            })
+        if county is not None:
+            params.update({
+                'county_name':county
+                })
+        if year and not year_ge:
+            if isinstance(year, str):
+                params.update({
+                    'year':year
+                })
+        if year_ge:
+            params.update({
+                'year__GE':year_ge
+            })
+        if year_lt:
+            params.update({
+                'year__LT':year_lt
             })
 
         try:
-            data = self.client(params)['data']
+            # Debug: Print parameters being passed to API
+            print(f"DEBUG api_update() params: {params}")
+            # Use the lambda client function which returns a DataFrame
+            df = self.client(params)
 
         except Exception as e:
             print(
@@ -716,7 +812,7 @@ class NASSTable(TableClient):
             )
             return
         else:
-            df = pd.DataFrame(data)
+            # df is already a DataFrame from query_df_numeric
             if 'freq_desc' in df.columns:
                 freqs = df['freq_desc'].unique().tolist()
                 if len(freqs) > 1:
@@ -736,45 +832,150 @@ class NASSTable(TableClient):
                             largest_fq = 'MONTHLY'
                             df.loc[:, 'freq_desc'] = largest_fq
 
+                # Try to calculate dates using the utility function
+                date_calculation_success = False
                 try:
-                    df.index = calc_dates(df)
+                    if calc_dates is not None:
+                        df_dates = calc_dates(df)
+                        df.index = df_dates
+                        df['date'] = df.index
+                        date_calculation_success = True
+                        if key is None: 
+                            key = f'{short_desc.lower()}'
+                    else:
+                        print(f'calc_dates utility not available for {short_desc}')
+                        
                 except Exception as e:
-                    print(
-                        f'Series {short_desc} failed at calculating datetimes step\nError Calculating datetimes, the following columns are in the dataframe:\n{df.columns}\n '
-                        f'The following was the cause of the exception \n{e}\n')
-                else:
-                    if key is None: key = f'{short_desc.lower()}'
-                    df['date'] = df.index
+                    print(f'Series {short_desc} failed at calculating datetimes using calc_dates utility')
+                    print(f'Error: {e}')
+                    print(f'Columns available: {list(df.columns)}')
+
+                # Fallback date handling if calc_dates failed
+
+                if not date_calculation_success:
+                    try:
+                        # Try basic date construction based on available columns
+                        if 'year' in df.columns and 'end_code' in df.columns:
+                            # Filter out invalid end codes
+                            df = df[df['end_code'].astype(str).str.isnumeric()]
+                            df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
+                            
+                            # Create date using year and month (end_code)
+                            df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
+                            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                            df.index = df['date']
+                            date_calculation_success = True
+                            print(f'Used fallback date calculation for {short_desc}')
+                            
+                        elif 'year' in df.columns:
+                            # If only year is available, use December 31st
+                            df['date'] = df['year'].astype(str) + '-12-31'
+                            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                            df.index = df['date']
+                            date_calculation_success = True
+                            print(f'Used year-only date calculation for {short_desc}')
+                            
+                    except Exception as fallback_error:
+                        print(f'Fallback date calculation also failed for {short_desc}: {fallback_error}')
+                
+                # If all date calculations failed, create a simple index
+                if not date_calculation_success:
+                    print(f'Warning: No date column created for {short_desc} - using row index')
+                    # Don't create a date column, but still allow data storage
+                    if key is None:
+                        key = f'{short_desc.lower()}'
 
             else:
-                # 28 used as date placeholder since the release date is not located in report
-                df = df[(1 < df['end_code'].astype(int) < 12)]
-                df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str) + '-28'
-                df.index = pd.to_datetime(df['date'])
+                # Handle case where there's no freq_desc column
+                try:
+                    if 'year' in df.columns and 'end_code' in df.columns:
+                        # Filter and create dates
+                        df = df[df['end_code'].astype(str).str.isnumeric()]
+                        df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
+                        df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
+                        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                        df.index = df['date']
+                    else:
+                        print(f'No standard date columns found for {short_desc}')
+                except Exception as e:
+                    print(f'Error in non-freq_desc date processing for {short_desc}: {e}')
 
-            if key is not None and 'date' in df.columns:
-                df.sort_index(inplace=True)
-                df[key_to_name(key)] = clean_col(df['Value'])
-                df[['date', 'commodity_desc', key_to_name(key), 'year', 'end_code']].to_hdf(self.table_db,
-                                                                                            key=f'{self.prefix}/{key}')
-                print(f'USDA Statistic {short_desc} saved to {Path(self.table_db)} in key {self.prefix}/{key}')
+            # Store the data if we have a key and some data
+            if key is not None and not df.empty:
+                try:
+                    df.sort_index(inplace=True)
+                    df[key_to_name(key)] = clean_col(df['Value'])
+                    
+                    if use_prefix:
+                        table_key = f'{self.prefix}/{key}'
+                    else:
+                        table_key = key
 
-            return df
+                    # Prepare columns for storage - only include columns that exist
+                    storage_columns = []
+                    if 'date' in df.columns:
+                        storage_columns.append('date')
+                    if 'commodity_desc' in df.columns:
+                        storage_columns.append('commodity_desc')
+                    # Add essential state-level columns for non-national data
+                    if agg_level != "NATIONAL" or filters.get('agg_level_desc', 'NATIONAL') != 'NATIONAL':
+                        if 'state_alpha' in df.columns:
+                            storage_columns.append("state_alpha")
+                        if 'state_fips_code' in df.columns:
+                            storage_columns.append("state_fips_code")
+                        if 'state_ansi' in df.columns:
+                            storage_columns.append("state_ansi")
+                        if 'state_name' in df.columns:
+                            storage_columns.append("state_name")
+                    
+                    # Add essential county-level columns including FIPS codes
+                    if agg_level == "COUNTY":
+                        if 'county_name' in df.columns:
+                            storage_columns.append("county_name")
+                        if 'county_code' in df.columns:
+                            storage_columns.append("county_code")
+                        if 'county_ansi' in df.columns:
+                            storage_columns.append("county_ansi")
+                        if 'zip_5' in df.columns:
+                            storage_columns.append("zip_5")
+                    if agg_level == "COUNTY" or agg_level == "AGRICULTURAL REGION":
+                        if 'location_desc' in df.columns:
+                            storage_columns.append("location_desc")
 
-    def update_all(self):
+                    
+                    storage_columns.append(key_to_name(key))  # This is the processed value column
+                    
+                    if 'year' in df.columns:
+                        storage_columns.append('year')
+                    if 'end_code' in df.columns:
+                        storage_columns.append('end_code')
+                    
+                    # Store only the columns that exist
+                    df[storage_columns].to_hdf(self.table_db, key=f'{table_key}')
+                    print(f'USDA Statistic {short_desc} saved to {Path(self.table_db)} in key {table_key}')
+                    return True
+                    
+                except Exception as storage_error:
+                    print(f'Error storing {short_desc}: {storage_error}')
+                    return False
+            else:
+                print(f'No data to store for {short_desc}')
+                return False
+
+    def api_update_all (self):
         failed = {}
         for k, v in walk_dict(self.mapping):
-            n_keys = len(k)
-            key = f'{k[0]}/{k[-1]}' if n_keys >= 2 else f'{k[-1]}'
+            table_key = f''
+            for i in range(len(k)):
+                table_key = table_key+'/'+ k[i]
             try:
-                self.update_table(short_desc=v, key=key)
+                self.api_update(short_desc=v, key=table_key)
 
             except Exception as e:
                 print(f"Exception Raised with the following error: {e}")
-                failed.update({key: v})
-
+                failed.update({k: v})
             else:
-                print(self[f'{key}'])
+                print(self[f'{table_key}'])
 
         if failed:
             print(f'The following keys failed to update: {failed}')
@@ -784,13 +985,469 @@ class NASSTable(TableClient):
 
         return
 
-    def __str__(self):
-        params = deepcopy(self.client_params)
-        params.update({'api_key': os.getenv('NASS_TOKEN')})
-        return str(params)
+    def api_update_commodity(self, commodity, **api_params):
+        series_map = self.table_map[commodity]
+        original_keys = []
+        successful_keys = []
+        for multi_key, short_desc in walk_dict(series_map):
+            # Create the table key from tuple
+            table_key = f'/{commodity}'
+            for i in range(len(multi_key)):
+                table_key = table_key +'/'+ multi_key[i]
 
-# Foreign Agricultural Service
-# Can also pull from NASSTable without calling any prefix or arguments
+            original_keys.append(table_key)
+            table_key = table_key[:-1] if table_key.endswith('/') else table_key
+            if self.api_update(short_desc, key=table_key, **api_params):
+                successful_keys.append(table_key)
+
+        missed_keys = [*set(original_keys).difference(successful_keys)]
+
+        return print(f'{len(successful_keys)}/{len(original_keys)} Successfully downloaded.\n\n Keys {missed_keys} failed to download')
+
+    def _get_acres_planted(self, commodity_desc:str, agg_level='COUNTY', update_keys=False, year=None, start_year=2010, end_year=2025):
+        """
+        Fetch Acres Planted for an area
+        Args:
+            year : calendar year acres planted
+            commodity_desc: selected commodity
+            agg_level: Aggregation level of data
+            update_keys: Set to True if you wish to save the data to self.table_db
+        """
+        if isinstance(start_year, int):
+            year_ge = str(start_year)
+            year_lt = str(end_year)
+        if not year:
+            date_params = {"year__GE": start_year, "year__LE": end_year}
+        else:
+            if isinstance(year, int):
+                year = str(year)
+
+            date_params = {"year":year}
+
+        req_params = {
+            "source_desc": "SURVEY",
+            "sector_desc": "CROPS",
+            "group_desc": "FIELD CROPS",
+            "commodity_desc": commodity_desc.upper(),
+            "short_desc": f"{commodity_desc.upper()} - ACRES PLANTED",
+            "domain_desc": "TOTAL",
+            "agg_level_desc": agg_level,
+            **date_params
+                      }
+        # Debug: Print parameters being passed to API
+        print(f"DEBUG _get_acres_planted() params: {req_params}")
+        acres_df = self.client(req_params)
+        if isinstance(acres_df, str):
+            print("Failed to retrieve JSON from server, likely bad parameters")
+            print(acres_df)
+            return False
+        else:
+            if update_keys:
+                acres_df.to_hdf(self.table_db, key=f"/{commodity_desc.lower()}/production/acres_planted/{start_year}_{end_year}")
+
+        return acres_df
+
+    async def api_update_multi_year_async(self, short_desc: str, start_year: int, end_year: int,
+                                         commodity_desc: str = None, agg_level: str = 'NATIONAL',
+                                         state: str = None, county: str = None, max_concurrent: int = 3,
+                                         freq_desc_preference: str = 'MONTHLY', key_desc=None) -> Dict[str, any]:
+        """
+        Update NASS data for multiple years using async requests for speed.
+        
+        Args:
+            short_desc: NASS short description (e.g., 'CORN - ACRES PLANTED')
+            start_year: Starting year (inclusive)
+            end_year: Ending year (inclusive)
+            commodity_desc: Commodity description (auto-detected if None)
+            agg_level: Aggregation level ('NATIONAL', 'STATE', 'COUNTY')
+            state: State name filter (optional)
+            county: County name filter (optional)
+            max_concurrent: Maximum concurrent requests (default: 3)
+            freq_desc_preference: Preferred frequency for data (default: 'MONTHLY')
+            
+        Returns:
+            Dict with update results and summary statistics
+        """
+        if not _quickstats_client:
+            raise RuntimeError("QuickStatsClient not available")
+            
+        if not commodity_desc:
+            commodity_desc = short_desc.split(' ')[0]
+
+        key_part = f'{commodity_desc.lower()}/{key_desc}'
+            
+        years = list(range(start_year, end_year + 1))
+        results = {
+            'successful_years': [],
+            'failed_years': [],
+            'errors': {},
+            'updated_tables': [],
+            'summary': {}
+        }
+        
+        # Determine sector and group like api_update method
+        if commodity_desc not in ["CATTLE", "BEEF", "HOGS", "PORK"]:
+            sector_desc = "CROPS"
+            group_desc = "FIELD CROPS"
+        else:
+            sector_desc, group_desc = "ANIMALS & PRODUCTS", "LIVESTOCK"
+            
+        # Base parameters that are common to all requests (match api_update format)
+        base_params = {
+            "source_desc": "SURVEY",
+            'sector_desc': sector_desc.upper(),
+            'group_desc': group_desc.upper(),
+            "commodity_desc": commodity_desc.upper(),
+            'agg_level_desc': agg_level.upper(),
+            'short_desc': short_desc.upper(),
+            'domain_desc': 'TOTAL',
+        }
+        
+        if state:
+            base_params['state_name'] = state
+        if county:
+            base_params['county_name'] = county
+            
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def update_single_year(year: int) -> Tuple[int, bool, Optional[str]]:
+            """Update a single year with error handling."""
+            async with semaphore:
+                try:
+                    print(f"Starting NASS update for {short_desc} {year}...")
+                    
+                    # Create year-specific parameters
+                    year_params = {**base_params, 'year': str(year)}
+                    
+                    # Debug: Print parameters being passed to API (like api_update)
+                    print(f"DEBUG async multi-year params: {year_params}")
+                    
+                    # Use async query
+                    df = await _quickstats_client.query_df_numeric_async(**year_params)
+                    
+                    if df.empty:
+                        error_msg = f"No data returned for {short_desc} {year}"
+                        print(f"⚠ Warning: {error_msg}")
+                        return year, False, error_msg
+                    
+                    # Process the data (similar to api_update logic)
+                    if 'freq_desc' in df.columns:
+                        freqs = df['freq_desc'].unique().tolist()
+                        if len(freqs) > 1:
+                            if freq_desc_preference in freqs:
+                                df = df.loc[df['freq_desc'].str.upper() == freq_desc_preference.upper()]
+                            else:
+                                # Save the frequency with most datapoints
+                                biggest_len = 0
+                                largest_fq = None
+                                for fq in freqs:
+                                    fq_len = len(df.loc[df['freq_desc'] == fq])
+                                    biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (biggest_len, largest_fq)
+                                df = df.loc[df['freq_desc'] == largest_fq]
+                    
+                    # Date processing (simplified)
+                    date_calculation_success = False
+                    try:
+                        if calc_dates is not None:
+                            df_dates = calc_dates(df)
+                            df.index = df_dates
+                            df['date'] = df.index
+                            date_calculation_success = True
+                    except Exception as e:
+                        print(f'Date calculation failed for {short_desc} {year}: {e}')
+                    
+                    # Fallback date handling
+                    if not date_calculation_success:
+                        try:
+                            if 'year' in df.columns and 'end_code' in df.columns:
+                                df = df[df['end_code'].astype(str).str.isnumeric()]
+                                df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
+                                df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
+                                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                                df.index = df['date']
+                                date_calculation_success = True
+                            elif 'year' in df.columns:
+                                df['date'] = df['year'].astype(str) + '-12-31'
+                                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                                df.index = df['date']
+                                date_calculation_success = True
+                        except Exception as e:
+                            print(f'Fallback date calculation failed for {short_desc} {year}: {e}')
+                    
+                    # Store the data
+                    key = f'{key_desc}/{year}'
+                    df.sort_index(inplace=True)
+                    df[key_to_name(key_desc)] = clean_col(df['Value'])
+                    
+                    table_key = key
+                    # Prepare columns for storage
+                    storage_columns = []
+                    if 'date' in df.columns:
+                        storage_columns.append('date')
+                    if 'commodity_desc' in df.columns:
+                        storage_columns.append('commodity_desc')
+                    
+                    # Add essential state-level columns for non-national data
+                    if agg_level != "NATIONAL":
+                        if 'state_alpha' in df.columns:
+                            storage_columns.append("state_alpha")
+                        if 'state_name' in df.columns:
+                            storage_columns.append("state_name")
+                        if 'state_fips_code' in df.columns:
+                            storage_columns.append("state_fips_code")
+                        if 'state_ansi' in df.columns:
+                            storage_columns.append("state_ansi")
+                    
+                    # Add essential county-level columns including FIPS codes
+                    if agg_level == "COUNTY":
+                        if 'county_name' in df.columns:
+                            storage_columns.append("county_name")
+                        if 'county_code' in df.columns:
+                            storage_columns.append("county_code")
+                        if 'county_ansi' in df.columns:
+                            storage_columns.append("county_ansi")
+                        if 'location_desc' in df.columns:
+                            storage_columns.append("location_desc")
+
+                    storage_columns.append(key_to_name(key))
+                    
+                    if 'year' in df.columns:
+                        storage_columns.append('year')
+                    if 'end_code' in df.columns:
+                        storage_columns.append('end_code')
+                    
+                    # Filter to only existing columns
+                    existing_columns = [col for col in storage_columns if col in df.columns]
+                    
+                    # Store to HDF5
+                    df[existing_columns].to_hdf(self.table_db, key=f'{table_key}')
+                    print(f"✓ Successfully updated {short_desc} {year} - {len(df)} records")
+                    
+                    return year, True, None
+                    
+                except Exception as e:
+                    error_msg = f"Failed to update {short_desc} {year}: {str(e)}"
+                    print(f"✗ Error: {error_msg}")
+                    return year, False, error_msg
+        
+        # Execute updates concurrently
+        print(f"Updating {short_desc} data for years {start_year}-{end_year} (max {max_concurrent} concurrent)")
+        
+        try:
+            # Create tasks for all years
+            tasks = [update_single_year(year) for year in years]
+            
+            # Execute with progress tracking
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for result in completed_results:
+                if isinstance(result, Exception):
+                    error_year = "unknown"
+                    results['failed_years'].append(error_year)
+                    results['errors'][error_year] = str(result)
+                else:
+                    year, success, error_msg = result
+                    if success:
+                        results['successful_years'].append(year)
+                        table_key = f'{self.prefix}/{short_desc.lower()}_{year}' if self.prefix else f'{short_desc.lower()}_{year}'
+                        results['updated_tables'].append(table_key)
+                    else:
+                        results['failed_years'].append(year)
+                        if error_msg:
+                            results['errors'][year] = error_msg
+            
+            # Generate summary
+            total_years = len(years)
+            successful_count = len(results['successful_years'])
+            failed_count = len(results['failed_years'])
+            
+            results['summary'] = {
+                'short_desc': short_desc,
+                'year_range': f"{start_year}-{end_year}",
+                'total_years_requested': total_years,
+                'successful_updates': successful_count,
+                'failed_updates': failed_count,
+                'success_rate': f"{successful_count/total_years*100:.1f}%" if total_years > 0 else "0%",
+                'agg_level': agg_level,
+                'max_concurrent_requests': max_concurrent
+            }
+            
+            print(f"\n📊 NASS Update Summary for {short_desc}:")
+            print(f"   Years requested: {total_years}")
+            print(f"   Successful: {successful_count}")
+            print(f"   Failed: {failed_count}")
+            print(f"   Success rate: {results['summary']['success_rate']}")
+            
+            if results['failed_years']:
+                print(f"   Failed years: {results['failed_years']}")
+                
+        except Exception as e:
+            error_msg = f"Critical error during multi-year update: {str(e)}"
+            print(f"💥 {error_msg}")
+            results['errors']['critical'] = error_msg
+            
+        return results
+
+    def api_update_multi_year_sync(self, short_desc: str, start_year: int, end_year: int, **kwargs) -> Dict[str, any]:
+        """
+        Synchronous wrapper for the async multi-year update method.
+        
+        Args:
+            short_desc: NASS short description
+            start_year: Starting year (inclusive)
+            end_year: Ending year (inclusive)
+            **kwargs: Additional arguments passed to async method
+            
+        Returns:
+            Dict containing update results
+        """
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context, need to create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.api_update_multi_year_async(short_desc, start_year, end_year, **kwargs)
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.api_update_multi_year_async(short_desc, start_year, end_year, **kwargs)
+            )
+
+    def update_from_url(self, url, key=None, use_prefix=True):
+        """
+        Update NASSTable from a USDA QuickStats URL.
+        
+        Args:
+            url: USDA QuickStats URL (e.g., https://quickstats.nass.usda.gov/results/...)
+            key: Storage key for the data (auto-generated if None)
+            use_prefix: Whether to use the table prefix
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            print(f'Fetching data from URL: {url}')
+            
+            # Fetch the data from the URL
+            import requests
+            response = requests.get(url)
+            response.raise_for_status()
+            
+            # Parse the response - QuickStats URLs typically return CSV data
+            from io import StringIO
+            df = pd.read_csv(StringIO(response.text))
+            
+            if df.empty:
+                print(f'No data returned from URL')
+                return False
+                
+            print(f'Downloaded {len(df)} rows, {len(df.columns)} columns')
+            print(f'Columns: {list(df.columns)}')
+            
+            # Process the data similar to api_update
+            if 'freq_desc' in df.columns:
+                freqs = df['freq_desc'].unique().tolist()
+                if len(freqs) > 1:
+                    # Use the frequency with most datapoints
+                    biggest_len = 0
+                    largest_fq = None
+                    for fq in freqs:
+                        fq_len = len(df.loc[df['freq_desc'] == fq])
+                        biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (biggest_len, largest_fq)
+                    df = df.loc[df['freq_desc'] == largest_fq]
+                    
+            # Try to calculate dates
+            date_calculation_success = False
+            try:
+                if calc_dates is not None:
+                    df_dates = calc_dates(df)
+                    df.index = df_dates
+                    df['date'] = df.index
+                    date_calculation_success = True
+                    if key is None and 'short_desc' in df.columns:
+                        key = f'{df["short_desc"].iloc[0].lower()}'
+            except Exception as e:
+                print(f'Date calculation failed: {e}')
+                
+            # Fallback date handling
+            if not date_calculation_success:
+                try:
+                    if 'year' in df.columns and 'end_code' in df.columns:
+                        df = df[df['end_code'].astype(str).str.isnumeric()]
+                        df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
+                        df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
+                        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                        df.index = df['date']
+                        date_calculation_success = True
+                        print(f'Used fallback date calculation')
+                    elif 'year' in df.columns:
+                        df['date'] = df['year'].astype(str) + '-12-31'
+                        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                        df.index = df['date']
+                        date_calculation_success = True
+                        print(f'Used year-only date calculation')
+                except Exception as e:
+                    print(f'Fallback date calculation failed: {e}')
+                    
+            # Generate key if not provided
+            if key is None:
+                if 'short_desc' in df.columns:
+                    key = df['short_desc'].iloc[0].lower().replace(' ', '_').replace(',', '')
+                else:
+                    key = 'url_data'
+                    
+            # Store the data
+            if not df.empty:
+                try:
+                    df.sort_index(inplace=True)
+                    if 'Value' in df.columns:
+                        df[key_to_name(key)] = clean_col(df['Value'])
+                    
+                    if use_prefix:
+                        table_key = f'{self.prefix}/{key}'
+                    else:
+                        table_key = key
+                        
+                    # Prepare columns for storage
+                    storage_columns = []
+                    if 'date' in df.columns:
+                        storage_columns.append('date')
+                    if 'commodity_desc' in df.columns:
+                        storage_columns.append('commodity_desc')
+                    if 'short_desc' in df.columns:
+                        storage_columns.append('short_desc')
+                    if key_to_name(key) in df.columns:
+                        storage_columns.append(key_to_name(key))
+                    if 'year' in df.columns:
+                        storage_columns.append('year')
+                    if 'end_code' in df.columns:
+                        storage_columns.append('end_code')
+                        
+                    # Store only existing columns
+                    df[storage_columns].to_hdf(self.table_db, key=f'{table_key}')
+                    print(f'Data from URL saved to {Path(self.table_db)} in key {table_key}')
+                    return True
+                    
+                except Exception as storage_error:
+                    print(f'Error storing data from URL: {storage_error}')
+                    return False
+            else:
+                print(f'No data to store from URL')
+                return False
+                
+        except Exception as e:
+            print(f'Error fetching data from URL: {e}')
+            import traceback
+            traceback.print_exc()
+            return False
+
 
 class FASTable(TableClient):
     psd = PSD_API()
@@ -922,13 +1579,12 @@ class FASTable(TableClient):
         else:
             print(f'Failed to get data for year {market_year} ')
 
-
 class WeatherTable(TableClient):
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None):
         return
 
-
+# Used for tracking finished good exports (Beef, Pork) and Unfinished goods (Corn, Soy) exports
 class ESRTableClient(FASTable):
     """
     Extended TableClient specifically for ESR data handling.
