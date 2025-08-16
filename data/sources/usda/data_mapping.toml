@@ -13,9 +13,40 @@ cows = 'CATTLE, COWS - PRICE RECEIVED, MEASURED IN $ / CWT'
 [hogs.supply]
 production = 'PORK, COLD STORAGE, FROZEN - STOCKS, MEASURED IN LB'
 
+[freq_pref.corn]
+consumption = "MONTHLY"
+production = "ANNUAL"
+condition = "WEEKLY"
+
 
 [corn.consumption]
-used_for_alcohol = "CORN, FOR FUEL ALCOHOL - USAGE, MEASURED IN BU"
+fuel_alcohol = "CORN, FOR FUEL ALCOHOL - USAGE, MEASURED IN BU"
+industrial_alcohol = "CORN, FOR INDUSTRIAL ALCOHOL - USAGE, MEASURED IN BU"
+other_products = "CORN, FOR OTHER PRODUCTS (EXCL ALCOHOL) - USAGE, MEASURED IN BU"
+
+[corn.production]
+total_production = "CORN, GRAIN - PRODUCTION, MEASURED IN BU"
+yield_acre = "CORN, GRAIN - YIELD, MEASURED IN BU / ACRE"
+
+[corn.production.condition]
+excellent = "CORN, CONDITION, MEASURED IN PCT EXCELLENT"
+good = "CORN, CONDITION, MEASURED IN PCT GOOD"
+fair = "CORN, CONDITION, MEASURED IN PCT FAIR"
+poor = "CORN, CONDITION, MEASURED IN PCT POOR"
+very_poor = "CORN, CONDITION, MEASURED IN PCT VERY POOR"
+
+[corn.production.progress]
+planted = "CORN - PROGRESS, MEASURED IN PCT PLANTED"
+silking = "CORN - PROGRESS, MEASURED IN PCT SILKING"
+dented = "CORN - PROGRESS, MEASURED IN PCT DENTED"
+mature = "CORN - PROGRESS, MEASURED IN PCT MATURE"
+harvested = "CORN - PROGRESS, MEASURED IN PCT HARVESTED"
+
+
+
+
+[corn.supply]
+stocks =  "CORN, GRAIN - STOCKS, MEASURED IN BU"
 
 
 [fas]

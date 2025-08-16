@@ -117,11 +117,24 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
         # Standardize column names if needed
         data_copy = self._standardize_esr_columns(data)
         
-        # Initialize parent class
+        # Initialize parent class with only numeric value columns
+        numeric_esr_columns = [
+            self.ESR_COLUMNS['weekly_exports'],
+            self.ESR_COLUMNS['outstanding_sales'],
+            self.ESR_COLUMNS['gross_new_sales'],
+            self.ESR_COLUMNS['current_my_net_sales'],
+            self.ESR_COLUMNS['current_my_total_commitment'],
+            self.ESR_COLUMNS['next_my_outstanding_sales'],
+            self.ESR_COLUMNS['next_my_net_sales']
+        ]
+        
+        # Filter to only include columns that actually exist in the data
+        available_numeric_columns = [col for col in numeric_esr_columns if col in data_copy.columns]
+        
         super().__init__(
             data_copy, 
             date_column=self.ESR_COLUMNS['date'],
-            value_columns=list(self.ESR_COLUMNS.values())[:-3]  # Exclude non-numeric columns
+            value_columns=available_numeric_columns
         )
         
         # Add derived columns
@@ -527,6 +540,111 @@ class ESRAnalyzer(TimeSeriesAnalyzer):
             })
         
         return pd.DataFrame(forecasts)
+    
+    def generate_seasonal_overlay(self, metric: str, start_year: int, end_year: int) -> pd.DataFrame:
+        """
+        Generate seasonal overlay data for multiple marketing years.
+        
+        Args:
+            metric: ESR metric to overlay (e.g., 'weeklyExports')
+            start_year: Starting marketing year
+            end_year: Ending marketing year
+            
+        Returns:
+            DataFrame with columns: my_week, marketing_year, and metric values
+        """
+        # Filter data for the specified marketing year range
+        data = self.data[
+            (self.data['marketing_year'] >= start_year) & 
+            (self.data['marketing_year'] <= end_year)
+        ].copy()
+        
+        if data.empty:
+            return pd.DataFrame()
+        
+        # Select relevant columns for overlay
+        overlay_columns = ['my_week', 'marketing_year', metric]
+        available_columns = [col for col in overlay_columns if col in data.columns]
+        
+        if metric not in data.columns:
+            return pd.DataFrame()
+        
+        # Create the overlay DataFrame
+        overlay_data = data[available_columns].copy()
+        
+        # Remove rows with null values in the metric
+        overlay_data = overlay_data.dropna(subset=[metric])
+        
+        # Convert marketing_year to string for better plotting
+        overlay_data['marketing_year'] = overlay_data['marketing_year'].astype(str)
+        
+        # Sort by marketing year and week for consistent plotting
+        overlay_data = overlay_data.sort_values(['marketing_year', 'my_week'])
+        
+        return overlay_data
+    
+    def generate_seasonal_analysis_data(self, metric: str, marketing_year: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Generate seasonal analysis data formatted for dashboard callbacks.
+        
+        Args:
+            metric: ESR metric to analyze (e.g., 'weeklyExports')
+            marketing_year: Optional specific marketing year to analyze
+            
+        Returns:
+            Dictionary with 'data' key containing DataFrame and analysis results
+        """
+        # Filter data for specific marketing year if provided
+        if marketing_year:
+            filtered_data = self.data[self.data['marketing_year'] == marketing_year].copy()
+        else:
+            filtered_data = self.data.copy()
+            
+        if filtered_data.empty:
+            return {
+                'error': 'no_data_available',
+                'data': pd.DataFrame()
+            }
+        
+        # Ensure we have the required columns
+        if metric not in filtered_data.columns:
+            return {
+                'error': f'metric_{metric}_not_found',
+                'data': pd.DataFrame()
+            }
+        
+        # Generate seasonal patterns analysis
+        seasonal_patterns = self.analyze_seasonal_patterns(metric)
+        
+        # Add additional derived columns for plotting
+        filtered_data = filtered_data.copy()
+        
+        # Calculate rolling averages for trend analysis
+        if len(filtered_data) >= 4:
+            filtered_data['rolling_avg_4w'] = filtered_data[metric].rolling(window=4, min_periods=1).mean()
+        if len(filtered_data) >= 8:
+            filtered_data['rolling_avg_8w'] = filtered_data[metric].rolling(window=8, min_periods=1).mean()
+        
+        # Calculate seasonal normalized values if we have enough data
+        if 'weekly_patterns' in seasonal_patterns and len(filtered_data) > 12:
+            weekly_means = pd.Series(seasonal_patterns['weekly_patterns']['mean'])
+            
+            # Create seasonal adjustment based on weekly patterns
+            filtered_data['seasonal_component'] = filtered_data['my_week'].map(weekly_means)
+            filtered_data['seasonal_adjusted'] = filtered_data[metric] - filtered_data['seasonal_component'].fillna(0)
+            
+            # Calculate detrended values
+            if len(filtered_data) >= 12:
+                trend = filtered_data[metric].rolling(window=12, center=True).mean()
+                filtered_data['detrended'] = filtered_data[metric] - trend
+        
+        return {
+            'data': filtered_data,
+            'seasonal_patterns': seasonal_patterns,
+            'marketing_year': marketing_year,
+            'metric': metric,
+            'data_points': len(filtered_data)
+        }
 
 
 class CommodityPriceAnalyzer(TimeSeriesAnalyzer):

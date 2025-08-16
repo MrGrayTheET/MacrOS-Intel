@@ -11,6 +11,13 @@ import asyncio
 import aiohttp
 from typing import List, Dict, Optional, Tuple
 
+# Google Drive integration
+try:
+    from .google_drive_client import GoogleDriveTableClient, create_gdrive_config_template
+    HAS_GDRIVE_INTEGRATION = True
+except ImportError:
+    HAS_GDRIVE_INTEGRATION = False
+
 
 # Import from config instead of using dotenv directly
 try:
@@ -33,12 +40,11 @@ except ImportError:
 # Import external APIs
 try:
     from myeia import API
-    from nasspython.nass_api import nass_param, nass_data
+    from data.sources.usda.api_wrappers.usda_quickstats import QuickStatsClient
 except ImportError as e:
     print(f"Warning: Could not import external APIs: {e}")
     API = None
-    nass_param = None
-    nass_data = None
+    QuickStatsClient = None
 
 # Import local modules with proper paths
 try:
@@ -98,10 +104,26 @@ except Exception as e:
 
 
 class TableClient:
-    """Base class for table data access"""
+    """
+    Base class for accessing tabular data stored in HDF5 format with optional Google Drive integration.
+    
+    This class provides a unified interface for reading/writing data to HDF5 stores,
+    with support for key prefixes, data mapping, and Google Drive synchronization.
+    
+    Attributes:
+        client: External API client for data fetching
+        data_folder: Local directory for data storage
+        table_db: Path to HDF5 database file
+        data_col: Column name containing the primary data values
+        rename: Whether to rename columns on load for simpler access
+        prefix: Key prefix for organizing data in HDF5 store
+        mapping: TOML configuration mapping for data organization
+        gdrive_client: Google Drive client for cloud synchronization
+        gdrive_enabled: Whether Google Drive integration is active
+    """
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None, api_data_col=None,
-                 rename_on_load=False):
+                 rename_on_load=False, gdrive_config=None):
         self.client = client
         self.data_folder = Path(data_folder)
         self.table_db = Path(self.data_folder, db_file_name)
@@ -117,6 +139,20 @@ class TableClient:
 
         self.client_params = {}
 
+        # Google Drive integration
+        self.gdrive_client = None
+        self.gdrive_enabled = False
+        if gdrive_config and HAS_GDRIVE_INTEGRATION:
+            try:
+                self.gdrive_client = GoogleDriveTableClient(gdrive_config)
+                self.gdrive_enabled = True
+                print(f"Google Drive integration enabled for {db_file_name}")
+            except Exception as e:
+                print(f"Warning: Could not initialize Google Drive client: {e}")
+                self.gdrive_enabled = False
+        elif gdrive_config and not HAS_GDRIVE_INTEGRATION:
+            print("Warning: Google Drive config provided but integration not available. Install google-api-python-client.")
+
         if map_file:
             try:
                 with open(map_file) as m:
@@ -129,7 +165,15 @@ class TableClient:
             self.mapping = {}
 
     def available_keys(self):
-        """Get available keys from HDF5 store"""
+        """
+        Get list of available data keys from the HDF5 store.
+        
+        Returns filtered keys based on the instance's key prefix if set.
+        Removes HDF5 path formatting (leading slashes) for cleaner access.
+        
+        Returns:
+            List[str]: Available data keys, filtered by prefix if applicable
+        """
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
                 all_keys = list(store.keys())
@@ -156,7 +200,17 @@ class TableClient:
             return []
 
     def get_key(self, key, use_prefix=True, use_simple_name=True):
-        """Get data for a specific key"""
+        """
+        Retrieve data for a specific key from the HDF5 store.
+        
+        Args:
+            key (str): Data key to retrieve
+            use_prefix (bool): Whether to apply the instance's key prefix
+            use_simple_name (bool): Whether to rename columns using key_to_name
+            
+        Returns:
+            pd.DataFrame: Retrieved data with optional column renaming
+        """
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
                 # Construct the full key path
@@ -185,7 +239,17 @@ class TableClient:
             return pd.DataFrame()
 
     def get_keys(self, keys: list, use_prefix=True, use_simple_name=True):
-        """Get data for multiple keys"""
+        """
+        Retrieve and concatenate data for multiple keys from the HDF5 store.
+        
+        Args:
+            keys (List[str]): List of data keys to retrieve
+            use_prefix (bool): Whether to apply the instance's key prefix  
+            use_simple_name (bool): Whether to rename columns using key_to_name
+            
+        Returns:
+            pd.DataFrame: Concatenated data from all requested keys
+        """
         dfs = []
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
@@ -335,11 +399,182 @@ class TableClient:
             return self.get_keys(item, use_prefix=True, use_simple_name=self.rename)
         elif isinstance(item, str):
             return self.get_key(item, use_prefix=True, use_simple_name=self.rename)
+    
+    # Google Drive Integration Methods
+    
+    def sync_from_gdrive(self, file_identifier: Optional[str] = None, force_download: bool = False):
+        """
+        Sync .h5 data from Google Drive to local storage.
+        
+        Args:
+            file_identifier: Specific file to sync (None for all mapped files)
+            force_download: Force re-download even if cached
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return
+        
+        if file_identifier:
+            # Sync specific file
+            try:
+                local_path = self.gdrive_client.download_h5_file(file_identifier, force_download=force_download)
+                
+                # Copy to our table database location
+                import shutil
+                shutil.copy2(local_path, self.table_db)
+                print(f"Synced {file_identifier} to local database")
+                
+            except Exception as e:
+                print(f"Error syncing file {file_identifier}: {e}")
+        else:
+            # Sync all mapped files
+            for logical_name, file_id in self.gdrive_client.file_mappings.items():
+                try:
+                    local_path = self.gdrive_client.download_h5_file(file_id, force_download=force_download)
+                    print(f"Downloaded {logical_name} ({file_id}) to {local_path}")
+                except Exception as e:
+                    print(f"Error syncing {logical_name}: {e}")
+    
+    def get_key_from_gdrive(self, key: str, file_identifier: Optional[str] = None, 
+                           use_simple_name: bool = True, force_download: bool = False):
+        """
+        Get data key directly from Google Drive .h5 file.
+        
+        Args:
+            key: HDF5 key to retrieve
+            file_identifier: Google Drive file ID or logical name
+            use_simple_name: Whether to rename columns
+            force_download: Force re-download even if cached
+            
+        Returns:
+            DataFrame with requested data
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled, falling back to local")
+            return self.get_key(key, use_simple_name=use_simple_name)
+        
+        try:
+            # Use the database file mapping if no specific file provided
+            if file_identifier is None:
+                # Try to find the file identifier from mapping
+                # This assumes the database name maps to a Google Drive file
+                db_name = self.table_db.stem  # Get filename without extension
+                file_identifier = self.gdrive_client.file_mappings.get(db_name)
+                
+                if not file_identifier:
+                    print(f"No Google Drive mapping found for {db_name}, using local file")
+                    return self.get_key(key, use_simple_name=use_simple_name)
+            
+            # Construct the full key path
+            if hasattr(self, 'prefix') and self.prefix:
+                full_key = f'{self.prefix}/{key}'
+            else:
+                full_key = key
+            
+            # Ensure key starts with '/' for HDF5 compatibility
+            if not full_key.startswith('/'):
+                full_key = f'/{full_key}'
+            
+            # Load data from Google Drive
+            data = self.gdrive_client.load_h5_data(file_identifier, full_key, force_download=force_download)
+            
+            # Apply column renaming if requested
+            if use_simple_name and not data.empty:
+                col_value = data.columns[0] if self.data_col is None else self.data_col
+                if col_value in data.columns:
+                    new_name = key_to_name(key)
+                    data = data.rename({col_value: new_name}, axis=1)
+            
+            return data
+            
+        except Exception as e:
+            print(f"Error getting key {key} from Google Drive: {e}")
+            print("Falling back to local file")
+            return self.get_key(key, use_simple_name=use_simple_name)
+    
+    def list_gdrive_files(self):
+        """List available .h5 files on Google Drive."""
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return []
+        
+        try:
+            files = self.gdrive_client.get_available_files()
+            print(f"Found {len(files)} .h5 files on Google Drive:")
+            for file_info in files:
+                size_mb = int(file_info.get('size', 0)) / (1024 * 1024)
+                print(f"  - {file_info['name']} ({size_mb:.1f} MB) - ID: {file_info['id']}")
+            return files
+        except Exception as e:
+            print(f"Error listing Google Drive files: {e}")
+            return []
+    
+    def get_gdrive_keys(self, file_identifier: str):
+        """
+        Get available keys from a Google Drive .h5 file.
+        
+        Args:
+            file_identifier: Google Drive file ID or logical name
+            
+        Returns:
+            List of available HDF5 keys
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return []
+        
+        try:
+            return self.gdrive_client.get_h5_keys(file_identifier)
+        except Exception as e:
+            print(f"Error getting keys from Google Drive file {file_identifier}: {e}")
+            return []
+    
+    def clear_gdrive_cache(self, older_than_days: Optional[int] = None):
+        """
+        Clear Google Drive cache files.
+        
+        Args:
+            older_than_days: Only clear files older than this many days (None for all)
+        """
+        if not self.gdrive_enabled:
+            print("Google Drive integration not enabled")
+            return
+        
+        try:
+            self.gdrive_client.gdrive_client.clear_cache(older_than_days)
+        except Exception as e:
+            print(f"Error clearing Google Drive cache: {e}")
+    
+    def get_gdrive_status(self):
+        """Get status of Google Drive integration."""
+        status = {
+            'enabled': self.gdrive_enabled,
+            'has_integration': HAS_GDRIVE_INTEGRATION,
+            'client_initialized': self.gdrive_client is not None,
+        }
+        
+        if self.gdrive_enabled and self.gdrive_client:
+            status['file_mappings'] = self.gdrive_client.file_mappings
+            status['cache_dir'] = str(self.gdrive_client.gdrive_client.cache_dir)
+        
+        return status
 
 
 
 class MarketTable:
-    """Data access layer for market and COT data from HDF5 files."""
+    """
+    Specialized data access layer for financial market and Commitment of Traders (COT) data.
+    
+    Manages historical price data (OHLCV) and COT positioning data stored in HDF5 format.
+    Includes resampling capabilities for different time frequencies and ticker mapping
+    for consistent data access across different data sources.
+    
+    Attributes:
+        market_table_db: Path to market OHLCV data HDF5 file
+        cot_table_db: Path to COT positioning data HDF5 file
+        ohlc_agg: Aggregation rules for OHLCV data resampling
+        ticker_map: TOML-based mapping for ticker aliases and relationships
+    """
 
     def __init__(self, alias_file=None, initial_ticker=None, start_date=None, end_date=None, freq='1D'):
         self.market_table_db = Path(MARKET_DATA_PATH) / 'market_data.h5'
@@ -452,7 +687,16 @@ class MarketTable:
 
 
 class EIATable(TableClient):
-    """EIA data table client"""
+    """
+    Energy Information Administration (EIA) data access client.
+    
+    Specialized TableClient for accessing EIA energy data including petroleum,
+    natural gas, electricity, and renewable energy statistics. Uses EIA API
+    for data fetching and stores results in commodity-organized HDF5 structure.
+    
+    Inherits all TableClient functionality with EIA-specific configuration
+    including data mappings and API integration.
+    """
 
     def __init__(self, commodity, rename_key_cols=True):
         # Use the loaded mapping
@@ -475,33 +719,68 @@ class EIATable(TableClient):
         self.commodity = self.prefix = commodity
 
 
+# Initialize QuickStats client
+if QuickStatsClient:
+    _quickstats_client = QuickStatsClient()
+else:
+    _quickstats_client = None
+
 nass_info = {
     'key': os.getenv('NASS_TOKEN'),
-    'client': lambda x: nass_data(os.getenv('NASS_TOKEN'), **x)}
+    'client': lambda x: _quickstats_client.query_df_numeric(**x) if _quickstats_client else None}
 
-# National Agricultural Stats
 class NASSTable(TableClient):
+    """
+    USDA National Agricultural Statistics Service (NASS) data access client.
+    
+    Provides access to USDA agricultural statistics including crop production,
+    livestock data, and agricultural surveys. Supports both predefined queries
+    from TOML configuration and custom parameter-based queries.
+    
+    Key Features:
+    - Crop and livestock data by commodity
+    - State and county-level agricultural statistics  
+    - Flexible query system with saved query templates
+    - Automatic date parsing and frequency handling
+    - Integration with NASS Quick Stats API
+    
+    Attributes:
+        table_map: TOML mapping of data series configurations
+        saved_queries: Predefined query templates from nass_queries.toml
+        client_params: Default API parameters for data requests
+    """
     with open(Path(PROJECT_ROOT, 'data', 'sources','usda' ,'data_mapping.toml')) as map_file:
         table_map = toml.load(map_file)
 
-    def __init__(self, source_desc,
-
-                 sector_desc,
-                 group_desc,
-                 commodity_desc, freq_desc=None, prefix=None):
+    def __init__(self,commodity_desc,
+                 source_desc="SURVEY",
+                 group_desc=None,
+                 freq_desc=None,
+                 agg_level_desc=None,
+                 prefix=None):
         self.prefix = self.table = prefix
         super().__init__(nass_info['client'], data_folder=store_folder, db_file_name="nass_agri_stats.hd5",
                          api_data_col='Value', key_prefix=prefix, rename_on_load=True)
+
+        if commodity_desc not in ["CATTLE", "HOGS"]:
+            sector_desc = "CROPS"
+            group_desc = "FIELD CROPS"
+        else:
+            sector_desc = "LIVESTOCK"
+            group_desc = "LIVESTOCK" # Update to proper later, this is a placeholder
+
         self.client_params = {
             'source_desc': source_desc,
             'sector_desc': sector_desc,
             'group_desc': group_desc,
             'commodity_desc': commodity_desc,
-            'agg_level_desc': 'NATIONAL',
+            'agg_level_desc': agg_level_desc,
             'domain_desc': 'TOTAL',
         }
+        with open(PROJECT_ROOT / "data" / "sources" / "usda" / "nass_queries.toml") as f:
+            self.saved_queries = toml.load(f)
 
-        self.mapping = self.table_map[prefix]
+        self.mapping = self.table_map[prefix] if prefix else self.table_map
 
         if freq_desc is not None:
             self.client_params.update({'freq_desc': freq_desc})
@@ -510,7 +789,9 @@ class NASSTable(TableClient):
 
     def get_descs(self, param_value='short_desc'):
 
-        return nass_param(param=param_value, **self.client_params)
+        if _quickstats_client is None:
+            raise RuntimeError("QuickStatsClient not available")
+        return _quickstats_client.get_param_values(param_value)
 
     def update_table(self, short_desc, freq_desc_preference='MONTHLY', key=None, agg_level=None, state=None,
                      county=None, ):
@@ -528,7 +809,8 @@ class NASSTable(TableClient):
             })
 
         try:
-            data = self.client(params)['data']
+            # Use the lambda client function which returns a DataFrame
+            df = self.client(params)
 
         except Exception as e:
             print(
@@ -536,7 +818,7 @@ class NASSTable(TableClient):
             )
             return
         else:
-            df = pd.DataFrame(data)
+            # df is already a DataFrame from query_df_numeric
             if 'freq_desc' in df.columns:
                 freqs = df['freq_desc'].unique().tolist()
                 if len(freqs) > 1:
@@ -581,6 +863,77 @@ class NASSTable(TableClient):
 
             return df
 
+    def fetch_query(self, query_short_name=None, short_desc=None, **client_params):
+        """
+        Fetch data using predefined queries or custom parameters.
+        
+        Used for fetching more specific, less generalized queries such as top growing counties
+        or custom parameter combinations not covered by standard update methods.
+        
+        Args:
+            query_short_name (str, optional): Key saved in data/sources/usda/nass_queries.toml
+            short_desc (str, optional): USDA NASS short description for the series
+            **client_params: Parameters used by the client to complete the request
+            
+        Returns:
+            dict: API response data or False if error occurred
+        """
+        query_params = {}
+        
+        if query_short_name:
+            # Use saved query from TOML file
+            if query_short_name in self.saved_queries.keys():
+                params_data = self.saved_queries[query_short_name]
+                
+                # Start with saved query parameters
+                query_params = {k: v for k, v in params_data.items() if k != 'variables'}
+                
+                # Apply variable substitutions and client parameters
+                for param_name in params_data.get('variables', []):
+                    if param_name in client_params:
+                        query_params[param_name] = client_params[param_name]
+                    else:
+                        print(f"Warning: Required parameter '{param_name}' not provided")
+                
+                # Handle template substitutions in saved query values
+                for key, value in query_params.items():
+                    if isinstance(value, str) and "{commodity_desc}" in value:
+                        if "commodity_desc" in client_params:
+                            query_params[key] = value.replace("{commodity_desc}", client_params["commodity_desc"])
+                        else:
+                            print("Warning: commodity_desc needed for template substitution but not provided")
+                            
+            else:
+                print(f"Failed to find query '{query_short_name}' in saved queries")
+                return False
+        else:
+            # Use direct parameter approach
+            if short_desc:
+                # Start with instance default parameters
+                query_params.update(self.client_params)
+                query_params['short_desc'] = short_desc
+                # Override with any provided client_params
+                query_params.update(client_params)
+            else:
+                if not client_params:
+                    # No query name, no short_desc, no params - use defaults
+                    query_params.update(self.client_params)
+                else:
+                    # Missing short_desc but have client_params
+                    if 'short_desc' not in client_params:
+                        print("Error: short_desc field is required when not using saved query")
+                        return False
+                    # Start with defaults, then override with client params
+                    query_params.update(client_params)
+        
+        print(f"Executing NASS query with parameters: {query_params}")
+        
+        try:
+            return self.client(query_params)
+        except Exception as e:
+            print(f"Error executing NASS query: {e}")
+            return False
+
     def update_all(self):
         failed = {}
         for k, v in walk_dict(self.mapping):
@@ -604,18 +957,288 @@ class NASSTable(TableClient):
 
         return
 
+    async def api_update_multi_year_async(self, short_desc: str, start_year: int, end_year: int,
+                                         commodity_desc: str = None, agg_level: str = 'NATIONAL',
+                                         state: str = None, county: str = None, max_concurrent: int = 3,
+                                         freq_desc_preference: str = 'MONTHLY') -> Dict[str, any]:
+        """
+        Update NASS data for multiple years using async requests for speed.
+        
+        Args:
+            short_desc: NASS short description (e.g., 'CORN - ACRES PLANTED')
+            start_year: Starting year (inclusive)
+            end_year: Ending year (inclusive)
+            commodity_desc: Commodity description (auto-detected if None)
+            agg_level: Aggregation level ('NATIONAL', 'STATE', 'COUNTY')
+            state: State name filter (optional)
+            county: County name filter (optional)
+            max_concurrent: Maximum concurrent requests (default: 3)
+            freq_desc_preference: Preferred frequency for data (default: 'MONTHLY')
+            
+        Returns:
+            Dict with update results and summary statistics
+        """
+        if not QuickStatsClient:
+            raise RuntimeError("QuickStatsClient not available - install usda_quickstats")
+            
+        # Initialize client if not already done
+        if not hasattr(self, '_quickstats_client') or self._quickstats_client is None:
+            self._quickstats_client = QuickStatsClient()
+            
+        if not commodity_desc:
+            commodity_desc = short_desc.split(' ')[0]
+            
+        years = list(range(start_year, end_year + 1))
+        results = {
+            'successful_years': [],
+            'failed_years': [],
+            'errors': {},
+            'updated_tables': [],
+            'summary': {}
+        }
+        
+        # Base parameters that are common to all requests
+        base_params = {
+            "source_desc": "SURVEY",
+            "commodity_desc": commodity_desc,
+            'short_desc': short_desc,
+            'agg_level_desc': agg_level
+        }
+        
+        if state:
+            base_params['state_name'] = state
+        if county:
+            base_params['county_name'] = county
+            
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def update_single_year(year: int) -> Tuple[int, bool, Optional[str]]:
+            """Update a single year with error handling."""
+            async with semaphore:
+                try:
+                    print(f"Starting NASS update for {short_desc} {year}...")
+                    
+                    # Create year-specific parameters
+                    year_params = {**base_params, 'year': str(year)}
+                    
+                    # Use async query
+                    df = await self._quickstats_client.query_df_numeric_async(**year_params)
+                    
+                    if df.empty:
+                        error_msg = f"No data returned for {short_desc} {year}"
+                        print(f"⚠ Warning: {error_msg}")
+                        return year, False, error_msg
+                    
+                    # Process the data (similar to api_update logic)
+                    if 'freq_desc' in df.columns:
+                        freqs = df['freq_desc'].unique().tolist()
+                        if len(freqs) > 1:
+                            if freq_desc_preference in freqs:
+                                df = df.loc[df['freq_desc'].str.upper() == freq_desc_preference.upper()]
+                            else:
+                                # Save the frequency with most datapoints
+                                biggest_len = 0
+                                largest_fq = None
+                                for fq in freqs:
+                                    fq_len = len(df.loc[df['freq_desc'] == fq])
+                                    biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (biggest_len, largest_fq)
+                                df = df.loc[df['freq_desc'] == largest_fq]
+                    
+                    # Date processing (simplified)
+                    date_calculation_success = False
+                    try:
+                        if 'year' in df.columns and 'end_code' in df.columns:
+                            df = df[df['end_code'].astype(str).str.isnumeric()]
+                            df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
+                            df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
+                            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                            df.index = df['date']
+                            date_calculation_success = True
+                        elif 'year' in df.columns:
+                            df['date'] = df['year'].astype(str) + '-12-31'
+                            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                            df.index = df['date']
+                            date_calculation_success = True
+                    except Exception as e:
+                        print(f'Date calculation failed for {short_desc} {year}: {e}')
+                    
+                    # Store the data
+                    key = f'{short_desc.lower()}_{year}'
+                    df.sort_index(inplace=True)
+                    df[key_to_name(key)] = clean_col(df['Value'])
+                    
+                    table_key = f'{self.prefix}/{key}' if hasattr(self, 'prefix') and self.prefix else key
+                    
+                    # Prepare columns for storage with essential FIPS codes
+                    storage_columns = []
+                    if 'date' in df.columns:
+                        storage_columns.append('date')
+                    if 'commodity_desc' in df.columns:
+                        storage_columns.append('commodity_desc')
+                    
+                    # Add essential state-level columns for non-national data
+                    if agg_level != "NATIONAL":
+                        if 'state_alpha' in df.columns:
+                            storage_columns.append("state_alpha")
+                        if 'state_name' in df.columns:
+                            storage_columns.append("state_name")
+                        if 'state_fips_code' in df.columns:
+                            storage_columns.append("state_fips_code")
+                        if 'state_ansi' in df.columns:
+                            storage_columns.append("state_ansi")
+                    
+                    # Add essential county-level columns including FIPS codes
+                    if agg_level == "COUNTY":
+                        if 'county_name' in df.columns:
+                            storage_columns.append("county_name")
+                        if 'county_code' in df.columns:
+                            storage_columns.append("county_code")
+                        if 'county_ansi' in df.columns:
+                            storage_columns.append("county_ansi")
+                        if 'location_desc' in df.columns:
+                            storage_columns.append("location_desc")
+                    
+                    storage_columns.append(key_to_name(key))
+                    
+                    if 'year' in df.columns:
+                        storage_columns.append('year')
+                    if 'end_code' in df.columns:
+                        storage_columns.append('end_code')
+                    
+                    # Filter to only existing columns
+                    existing_columns = [col for col in storage_columns if col in df.columns]
+                    
+                    # Store to HDF5
+                    df[existing_columns].to_hdf(self.table_db, key=f'{table_key}')
+                    print(f"✓ Successfully updated {short_desc} {year} - {len(df)} records")
+                    
+                    return year, True, None
+                    
+                except Exception as e:
+                    error_msg = f"Failed to update {short_desc} {year}: {str(e)}"
+                    print(f"✗ Error: {error_msg}")
+                    return year, False, error_msg
+        
+        # Execute updates concurrently
+        print(f"Updating {short_desc} data for years {start_year}-{end_year} (max {max_concurrent} concurrent)")
+        
+        try:
+            # Create tasks for all years
+            tasks = [update_single_year(year) for year in years]
+            
+            # Execute with progress tracking
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for result in completed_results:
+                if isinstance(result, Exception):
+                    error_year = "unknown"
+                    results['failed_years'].append(error_year)
+                    results['errors'][error_year] = str(result)
+                else:
+                    year, success, error_msg = result
+                    if success:
+                        results['successful_years'].append(year)
+                        table_key = f'{self.prefix}/{short_desc.lower()}_{year}' if hasattr(self, 'prefix') and self.prefix else f'{short_desc.lower()}_{year}'
+                        results['updated_tables'].append(table_key)
+                    else:
+                        results['failed_years'].append(year)
+                        if error_msg:
+                            results['errors'][year] = error_msg
+            
+            # Generate summary
+            total_years = len(years)
+            successful_count = len(results['successful_years'])
+            failed_count = len(results['failed_years'])
+            
+            results['summary'] = {
+                'short_desc': short_desc,
+                'year_range': f"{start_year}-{end_year}",
+                'total_years_requested': total_years,
+                'successful_updates': successful_count,
+                'failed_updates': failed_count,
+                'success_rate': f"{successful_count/total_years*100:.1f}%" if total_years > 0 else "0%",
+                'agg_level': agg_level,
+                'max_concurrent_requests': max_concurrent
+            }
+            
+            print(f"\n📊 NASS Update Summary for {short_desc}:")
+            print(f"   Years requested: {total_years}")
+            print(f"   Successful: {successful_count}")
+            print(f"   Failed: {failed_count}")
+            print(f"   Success rate: {results['summary']['success_rate']}")
+            
+            if results['failed_years']:
+                print(f"   Failed years: {results['failed_years']}")
+                
+        except Exception as e:
+            error_msg = f"Critical error during multi-year update: {str(e)}"
+            print(f"💥 {error_msg}")
+            results['errors']['critical'] = error_msg
+            
+        return results
+
+    def api_update_multi_year_sync(self, short_desc: str, start_year: int, end_year: int, **kwargs) -> Dict[str, any]:
+        """
+        Synchronous wrapper for the async multi-year update method.
+        
+        Args:
+            short_desc: NASS short description
+            start_year: Starting year (inclusive)
+            end_year: Ending year (inclusive)
+            **kwargs: Additional arguments passed to async method
+            
+        Returns:
+            Dict containing update results
+        """
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context, need to create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.api_update_multi_year_async(short_desc, start_year, end_year, **kwargs)
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.api_update_multi_year_async(short_desc, start_year, end_year, **kwargs)
+            )
+
     def __str__(self):
         params = deepcopy(self.client_params)
         params.update({'api_key': os.getenv('NASS_TOKEN')})
         return str(params)
 
-# Foreign Agricultural Service
-# Can also pull from NASSTable without calling any prefix or arguments
-
 class FASTable(TableClient):
+    """
+    USDA Foreign Agricultural Service (FAS) data access client.
+    
+    Manages agricultural trade data including Production, Supply & Distribution (PSD),
+    Export Sales Reporting (ESR), and trade balance information. Integrates with
+    multiple USDA APIs and provides methods for analyzing export destinations
+    and trade flows.
+    
+    Key Features:
+    - PSD data for supply/demand analysis
+    - ESR weekly export sales data
+    - Top trading partner identification
+    - Multi-year ESR data updates with async support
+    - Integration with USDA commodity and country codes
+    
+    Attributes:
+        psd: PSD API client for supply/demand data
+        esr: ESR API client for export sales data  
+        comms, attrs, countries: USDA code enumerations
+        esr_codes: Mapping of commodities to ESR codes
+        aliases: Commodity name aliases for data consistency
+    """
     psd = PSD_API()
     comms, attrs, countries = CommodityCode, AttributeCode, CountryCode
-    # Shares the same table as NASSTable for convenience’s sake as they link to the same commodities and agency
     def __init__(self, commodity=None):
         super().__init__(client=self.psd, data_folder=DATA_PATH, db_file_name='nass_agri_stats.hd5',
                          key_prefix=commodity, rename_on_load=False)
@@ -744,15 +1367,41 @@ class FASTable(TableClient):
 
 
 class WeatherTable(TableClient):
+    """
+    Weather data access client (placeholder implementation).
+    
+    Intended for accessing weather and climate data from sources like NCEI.
+    Currently not implemented - serves as placeholder for future weather
+    data integration capabilities.
+    
+    TODO: Implement weather data fetching and storage methods
+    """
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None):
+        # TODO: Implement weather data client initialization
         return
 
 
 class ESRTableClient(FASTable):
     """
-    Extended TableClient specifically for ESR data handling.
-    Includes methods for ESR-specific data processing and filtering.
+    Enhanced FAS client specialized for Export Sales Reporting (ESR) data analysis.
+    
+    Extends FASTable with advanced ESR-specific functionality including multi-year
+    data analysis, seasonal pattern detection, commitment vs shipment analysis,
+    and CSV import capabilities. Designed for comprehensive agricultural export
+    trade analysis and visualization.
+    
+    Key Features:
+    - Multi-year ESR data aggregation and standardization
+    - Seasonal pattern analysis for export timing
+    - Commitment vs shipment gap analysis 
+    - CSV import with automatic commodity detection
+    - Data validation and quality checks
+    - Async multi-year updates for performance
+    - Integration with ESR analytics models
+    
+    Methods support both individual commodity analysis and cross-commodity
+    comparisons with flexible filtering by country, date ranges, and metrics.
     """
 
     def __init__(self, *args, **kwargs):

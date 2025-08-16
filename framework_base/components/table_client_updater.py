@@ -325,7 +325,7 @@ def handle_full_update(client_type):
     try:
         if client_type == "nass":
             client = NASSTable()
-            result = client.api_update_all()
+            result = client.update_all()
             if isinstance(result, dict) and result:  # Failed updates
                 status = dbc.Alert(f"NASS update completed with {len(result)} failures.", color="warning")
             else:

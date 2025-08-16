@@ -578,6 +578,7 @@ class FlexibleMenu:
             'value': value
         })
         return self
+    
 
     def generate_menu_div(self) -> html.Div:
         """Generate the menu div."""
@@ -605,7 +606,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.Dropdown(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         options=comp['options'],
                         value=comp['value'],
                         multi=comp['multi'],
@@ -622,7 +623,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.Checklist(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         options=comp['options'],
                         value=comp['value'],
                         style={'color': '#fff'}
@@ -646,7 +647,7 @@ class FlexibleMenu:
                 element = html.Div([
                     html.Button(
                         comp['label'],
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         n_clicks=0,
                         style=button_style
                     )
@@ -661,7 +662,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.DatePickerRange(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         start_date=comp['start_date'],
                         end_date=comp['end_date'],
                         display_format='YYYY-MM-DD',
@@ -678,7 +679,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.RangeSlider(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         min=comp['min'],
                         max=comp['max'],
                         value=comp['value'],
@@ -696,7 +697,7 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.Input(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         type=comp['input_type'],
                         value=comp['value'],
                         placeholder=comp['placeholder'],
@@ -722,12 +723,13 @@ class FlexibleMenu:
                         'display': 'block'
                     }),
                     dcc.RadioItems(
-                        id=f"{self.menu_id}_{comp['id']}",
+                        id=f"{self.menu_id}-{comp['id']}",
                         options=comp['options'],
                         value=comp['value'],
                         style={'color': '#fff'}
                     )
                 ], style={'marginBottom': '20px'})
+            
 
             menu_elements.append(element)
 
@@ -748,7 +750,7 @@ class FlexibleMenu:
 
     def get_component_ids(self) -> Dict[str, str]:
         """Get all component IDs for callback registration."""
-        return {comp['id']: f"{self.menu_id}_{comp['id']}" for comp in self.components}
+        return {comp['id']: f"{self.menu_id}-{comp['id']}" for comp in self.components}
     
     def get_all_components(self) -> Dict[str, Dict]:
         """Get all components with their metadata."""
@@ -759,7 +761,7 @@ class FlexibleMenu:
         from dash import Input
         inputs = []
         for comp in self.components:
-            component_id = f"{self.menu_id}_{comp['id']}"
+            component_id = f"{self.menu_id}-{comp['id']}"
             if comp['type'] == 'dropdown':
                 inputs.append(Input(component_id, 'value'))
             elif comp['type'] == 'checklist':
@@ -2033,19 +2035,24 @@ class EnhancedFrameGrid:
                 print(f"Error in store callback: {e}")
                 return [self._create_empty_figure(f"Store Error: {str(e)}") for i in range(len(chart_ids))]
 
-    def register_chart_store_callback(self, app, chart_id: str, update_function, menu_inputs: list = None):
+    def register_chart_store_callback(self, app, chart_id, update_function, menu_inputs: list = None):
         """
-        Register store-based callback for a single chart.
+        Register store-based callback for one or more charts.
         
         Args:
             app: Dash app instance
-            chart_id: Chart ID to register
-            update_function: Function that takes (chart_id, store_data=None, **menu_values) and returns figure
+            chart_id: Chart ID (str) or list of Chart IDs to register
+            update_function: Function that takes (chart_id(s), store_data=None, **menu_values) and returns figure(s)
             menu_inputs: List of menu component IDs to include as inputs (optional)
         """
-        if chart_id not in self.chart_registry:
-            print(f"Warning: Chart {chart_id} not found in registry")
-            return False
+        # Handle both single chart_id and list of chart_ids
+        chart_ids = [chart_id] if isinstance(chart_id, str) else chart_id
+        
+        # Validate all chart IDs exist
+        for cid in chart_ids:
+            if cid not in self.chart_registry:
+                print(f"Warning: Chart {cid} not found in registry")
+                return False
             
         if not self.data_source:
             print(f"Warning: No data_source specified for store callback on {chart_id}")
@@ -2065,13 +2072,15 @@ class EnhancedFrameGrid:
                     input_ids.append(full_id)
         
         # Register callback
+        outputs = [Output(cid, 'figure') for cid in chart_ids]
+        
         @app.callback(
-            Output(chart_id, 'figure'),
+            outputs,
             inputs,
             prevent_initial_call=False
         )
         def update_chart_from_store(*args):
-            """Update single chart from store data with menu filtering."""
+            """Update chart(s) from store data with menu filtering."""
             store_data = args[0] if args else None
             menu_values = args[1:] if len(args) > 1 else []
             
@@ -2082,41 +2091,65 @@ class EnhancedFrameGrid:
                     if i < len(menu_values):
                         menu_dict[menu_comp_id] = menu_values[i]
             
-            print(f"[STORE] Updating {chart_id}, store_data: {bool(store_data)}, menu: {menu_dict}")
+            print(f"[STORE] Updating {chart_ids}, store_data: {bool(store_data)}, menu: {menu_dict}")
             
             try:
-                return update_function(chart_id, store_data=store_data, **menu_dict)
+                # Call update function with chart_id(s)
+                result = update_function(chart_id, store_data=store_data, **menu_dict)
+                
+                # Handle return value - single figure or list of figures
+                if len(chart_ids) == 1:
+                    return result if result is not None else self._create_empty_figure("No data")
+                else:
+                    # Multiple charts - expect list of figures
+                    if isinstance(result, list) and len(result) == len(chart_ids):
+                        return result
+                    elif not isinstance(result, list):
+                        # Single figure returned for multiple charts - duplicate it
+                        return [result] * len(chart_ids)
+                    else:
+                        print(f"Warning: Expected {len(chart_ids)} figures, got {len(result) if isinstance(result, list) else 1}")
+                        return [self._create_empty_figure(f"Figure {i+1}") for i in range(len(chart_ids))]
+                        
             except Exception as e:
-                print(f"Error in store callback for {chart_id}: {e}")
-                return self._create_empty_figure(f"Store Error: {str(e)}")
+                print(f"Error in store callback for {chart_ids}: {e}")
+                error_figs = [self._create_empty_figure(f"Store Error: {str(e)}") for _ in chart_ids]
+                return error_figs[0] if len(chart_ids) == 1 else error_figs
         
-        # Update registry
-        self.chart_registry[chart_id].update({
-            'callback_type': 'store',
-            'callback_registered': True,
-            'update_function': update_function,
-            'input_ids': input_ids,
-            'output_ids': [chart_id]
-        })
+        # Update registry for all charts
+        for cid in chart_ids:
+            self.chart_registry[cid].update({
+                'callback_type': 'store',
+                'callback_registered': True,
+                'update_function': update_function,
+                'input_ids': input_ids,
+                'output_ids': chart_ids,  # All charts share same outputs
+                'multi_chart_group': chart_ids if len(chart_ids) > 1 else None
+            })
         
-        print(f"Registered store callback for {chart_id}")
+        print(f"Registered store callback for {chart_ids}")
         return True
 
-    def register_chart_function_callback(self, app, chart_id: str, update_function, 
+    def register_chart_function_callback(self, app, chart_id, update_function, 
                                        input_components: list, trigger_component: str = None):
         """
-        Register function-based callback for a single chart.
+        Register function-based callback for one or more charts.
         
         Args:
             app: Dash app instance
-            chart_id: Chart ID to register
-            update_function: Function that takes (chart_id, **values) and returns figure
+            chart_id: Chart ID (str) or list of Chart IDs to register
+            update_function: Function that takes (chart_id(s), **values) and returns figure(s)
             input_components: List of component IDs to use as inputs
             trigger_component: Component ID that triggers the update (button, etc.)
         """
-        if chart_id not in self.chart_registry:
-            print(f"Warning: Chart {chart_id} not found in registry")
-            return False
+        # Handle both single chart_id and list of chart_ids
+        chart_ids = [chart_id] if isinstance(chart_id, str) else chart_id
+        
+        # Validate all chart IDs exist
+        for cid in chart_ids:
+            if cid not in self.chart_registry:
+                print(f"Warning: Chart {cid} not found in registry")
+                return False
         
         if not input_components:
             print(f"Warning: No input components specified for {chart_id}")
@@ -2143,19 +2176,22 @@ class EnhancedFrameGrid:
             return False
         
         # Register callback
+        outputs = [Output(cid, 'figure') for cid in chart_ids]
+        
         @app.callback(
-            Output(chart_id, 'figure'),
+            outputs,
             inputs,
             states,
             prevent_initial_call=True
         )
         def update_chart_from_function(*args):
-            """Update single chart from function with menu values."""
+            """Update chart(s) from function with menu values."""
             trigger_value = args[0] if args else 0
             state_values = args[1:] if len(args) > 1 else []
             
             if not trigger_value:
-                return dash.no_update
+                no_updates = [dash.no_update] * len(chart_ids)
+                return no_updates[0] if len(chart_ids) == 1 else no_updates
             
             # Build values dict
             values_dict = {}
@@ -2167,27 +2203,47 @@ class EnhancedFrameGrid:
                         values_dict[comp_id] = state_values[state_idx]
                         state_idx += 1
             
-            print(f"[FUNCTION] Updating {chart_id}, trigger: {trigger_value}, values: {values_dict}")
+            print(f"[FUNCTION] Updating {chart_ids}, trigger: {trigger_value}, values: {values_dict}")
             
             try:
-                return update_function(chart_id, **values_dict)
+                # Call update function with chart_id(s)
+                result = update_function(chart_id, **values_dict)
+                
+                # Handle return value - single figure or list of figures
+                if len(chart_ids) == 1:
+                    return result if result is not None else self._create_empty_figure("No data")
+                else:
+                    # Multiple charts - expect list of figures
+                    if isinstance(result, list) and len(result) == len(chart_ids):
+                        return result
+                    elif not isinstance(result, list):
+                        # Single figure returned for multiple charts - duplicate it
+                        return [result] * len(chart_ids)
+                    else:
+                        print(f"Warning: Expected {len(chart_ids)} figures, got {len(result) if isinstance(result, list) else 1}")
+                        return [self._create_empty_figure(f"Figure {i+1}") for i in range(len(chart_ids))]
+                        
             except Exception as e:
-                print(f"Error in function callback for {chart_id}: {e}")
-                return self._create_empty_figure(f"Function Error: {str(e)}")
+                print(f"Error in function callback for {chart_ids}: {e}")
+                error_figs = [self._create_empty_figure(f"Function Error: {str(e)}") for _ in chart_ids]
+                return error_figs[0] if len(chart_ids) == 1 else error_figs
         
-        # Update registry
-        self.chart_registry[chart_id].update({
-            'callback_type': 'function',
-            'callback_registered': True,
-            'update_function': update_function,
-            'input_ids': input_ids,
-            'output_ids': [chart_id]
-        })
+        # Update registry for all charts
+        for cid in chart_ids:
+            self.chart_registry[cid].update({
+                'callback_type': 'function',
+                'callback_registered': True,
+                'update_function': update_function,
+                'input_ids': input_ids,
+                'output_ids': chart_ids,  # All charts share same outputs
+                'multi_chart_group': chart_ids if len(chart_ids) > 1 else None
+            })
         
-        print(f"Registered function callback for {chart_id}")
+        print(f"Registered function callback for {chart_ids}")
         return True
 
     def get_chart_ids(self) -> list:
+
         """Get all chart IDs in the grid."""
         return list(self.chart_registry.keys())
     
@@ -2210,21 +2266,56 @@ class EnhancedFrameGrid:
         """Get information about a specific chart."""
         return self.chart_registry.get(chart_id, {})
     
+    def get_multi_chart_groups(self) -> dict:
+        """Get multi-chart groups and their member charts."""
+        groups = {}
+        for chart_id, info in self.chart_registry.items():
+            group = info.get('multi_chart_group')
+            if group and len(group) > 1:
+                group_key = tuple(sorted(group))  # Use sorted tuple as key
+                if group_key not in groups:
+                    groups[group_key] = {
+                        'charts': group,
+                        'callback_type': info.get('callback_type'),
+                        'registered': info.get('callback_registered', False)
+                    }
+        return groups
+    
+    def is_multi_chart_callback(self, chart_id: str) -> bool:
+        """Check if a chart is part of a multi-chart callback."""
+        info = self.chart_registry.get(chart_id, {})
+        group = info.get('multi_chart_group')
+        return group is not None and len(group) > 1
+    
     def print_chart_registry_summary(self):
         """Print summary of chart registry and callback status."""
         print("\nChart Registry Summary:")
         print("=" * 40)
         
+        # Show individual charts
         for chart_id, info in self.chart_registry.items():
             callback_type = info.get('callback_type', 'None')
             registered = info.get('callback_registered', False)
-            status = "✓" if registered else "✗"
-            print(f"{status} {chart_id}: {callback_type}")
+            status = "[OK]" if registered else "[--]"
+            multi_group = " (multi)" if self.is_multi_chart_callback(chart_id) else ""
+            print(f"{status} {chart_id}: {callback_type}{multi_group}")
+        
+        # Show multi-chart groups
+        groups = self.get_multi_chart_groups()
+        if groups:
+            print(f"\nMulti-Chart Groups:")
+            print("-" * 20)
+            for i, (group_key, group_info) in enumerate(groups.items(), 1):
+                charts = group_info['charts']
+                callback_type = group_info['callback_type']
+                status = "[OK]" if group_info['registered'] else "[--]"
+                print(f"{status} Group {i} ({callback_type}): {charts}")
         
         print(f"\nTotal Charts: {len(self.chart_registry)}")
         print(f"Store Callbacks: {len(self.get_store_chart_ids())}")
         print(f"Function Callbacks: {len(self.get_function_chart_ids())}")
         print(f"Unregistered: {len(self.get_unregistered_chart_ids())}")
+        print(f"Multi-Chart Groups: {len(groups)}")
         print("=" * 40)
 
     def _validate_store_data(self, store_data):
@@ -2412,8 +2503,6 @@ class EnhancedFrameGrid:
         )
         fig.update_layout(title=title, height=400)
         return fig
-
-
 
 
 # Enhanced configuration examples
