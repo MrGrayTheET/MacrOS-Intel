@@ -353,7 +353,7 @@ class TableClient:
             print(f"Error listing tables: {e}")
             return []
 
-    def update_data(self, key, data, use_prefix=True, metadata=None):
+    def update_table_data(self, key, data, use_prefix=True, metadata=None):
         """
         Generic update method for storing data to any key in the HDF5 store.
         
@@ -697,8 +697,11 @@ class EIATable(TableClient):
         if API is None:
             print("Warning: EIA API not available. Using mock client.")
             client = lambda **kwargs: pd.DataFrame()  # Mock client
+            self.energy_api = None
         else:
-            client = API().get_series
+             self.energy_api = API()
+             client = self.energy_api.get_series
+
 
         super().__init__(
             client,
@@ -709,6 +712,37 @@ class EIATable(TableClient):
             rename_on_load=rename_key_cols
         )
         self.commodity = self.prefix = commodity
+
+    def api_update(self, series, **kwargs):
+
+        return
+
+    def api_update_via_route(self, route_params:dict ,key:str, simple_col_names=True, use_prefix=True ):
+        """
+        :param route_params:
+        :param series:
+        :return:
+        """
+        data_series = self.get_series_via_route(**route_params)
+        self.update_table_data(data=data_series, key=key, use_prefix=use_prefix)
+
+        return
+
+        
+
+    def get_series_via_route(self, route, series,start_date=None, end_date=None, **kwargs):
+        date_params = {}
+        if start_date:
+            date_params.update({
+                'start_date':start_date
+                })
+        if end_date:
+            date_params.update({
+                'end_date':end_date
+                })
+
+        return self.energy_api.get_series_via_route(route=route, series=series, **date_params, **kwargs)
+
 
 
 # Initialize QuickStats client
