@@ -1,0 +1,17 @@
+
+[cattle.supply]
+frozen_inventory = 'BEEF, COLD STORAGE, FROZEN - STOCKS, MEASURED IN LB'
+production = 'BEEF, SLAUGHTER, COMMERCIAL - PRODUCTION, MEASURED IN LB'
+feeder_inventory = 'CATTLE, ON FEED - INVENTORY'
+ge_1000 = 'CATTLE, GE 1000 LBS, ON FEED - PLACEMENTS, MEASURED IN HEAD'
+calves = 'CATTLE - CALF CROP, MEASURED IN HEAD'
+
+[cattle.price]
+calves = 'CATTLE, CALVES - PRICE RECEIVED, PARITY, MEASURED IN $ / CWT'
+cows = 'CATTLE, COWS - PRICE RECEIVED, MEASURED IN $ / CWT'
+
+[hogs.supply]
+production = 'PORK, COLD STORAGE, FROZEN - STOCKS, MEASURED IN LB'
+
+[fas]
+attrs = ['imports', 'exports', 'domestic_consumption']
