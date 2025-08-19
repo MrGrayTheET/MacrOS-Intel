@@ -18,9 +18,12 @@ def walk_dict(d, parent_key=()):
         else:
             yield full_key, v
 
-def key_to_name(table_key):
+def key_to_name(table_key, use_last_only=False):
     key_parts = table_key.rsplit('/')
-    name = f"{key_parts[-1]}_{key_parts[-2]}"
+    if use_last_only:
+        name = key_parts[-1]
+    else:
+        name = f"{key_parts[-1]}_{key_parts[-2]}"
     return name
 
 def generate_layout_keys(table_client, categories=[]):
@@ -166,3 +169,49 @@ def create_empty_figure(title: str) -> go.Figure:
     )
     fig.update_layout(title=title, height=400)
     return fig
+
+
+def convert_to_long(df:pd.DataFrame, **kwargs) -> pd.DataFrame:
+    """
+    Convert EIA CSV data to long format with datetime index.
+    
+    Args:
+        csv_path: Path to EIA CSV file
+        
+    Returns:
+        DataFrame with datetime index, metric columns (minus "Natural Gas"), 
+        and unit column if all units are the same
+    """
+    # Read the CSV
+    
+    # Convert YYYYMM to datetime
+    df['date'] = pd.to_datetime(df['YYYYMM'], format='%Y%m', errors='coerce')
+    
+    # Remove "Natural Gas" from descriptions and clean up
+    df['metric'] = df['Description'].str.replace('Natural Gas ', '', regex=False).str.strip()
+    
+    # Filter out rows with "Not Available" values
+    df = df[df['Value'] != 'Not Available'].copy()
+    
+    # Convert Value to numeric
+    df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
+    
+    # Check if all units are the same
+    unique_units = df['Unit'].unique()
+    
+    # Pivot to wide format
+    result = df.pivot_table(
+        index='date',
+        columns='metric',
+        values='Value',
+        aggfunc='first'
+    )
+    
+    # Reset index to make date a column, then set as index
+    result = result.reset_index().set_index('date')
+    
+    # Add unit column if all units are the same
+    if len(unique_units) == 1:
+        result['unit'] = unique_units[0]
+    
+    return result

@@ -14,10 +14,10 @@ from typing import List, Dict, Optional, Tuple
 # Google Drive integration
 try:
     from .google_drive_client import GoogleDriveTableClient, create_gdrive_config_template
+
     HAS_GDRIVE_INTEGRATION = True
 except ImportError:
     HAS_GDRIVE_INTEGRATION = False
-
 
 # Import from config instead of using dotenv directly
 try:
@@ -50,10 +50,13 @@ except ImportError as e:
 try:
     # Update import paths to match your structure
     from data.sources.usda.nass_utils import calc_dates, clean_numeric_column as clean_col, clean_fas
-    from data.sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict, rev_lookup, valid_codes, code_lookup
+    from data.sources.usda.api_wrappers.psd_api import PSD_API, CommodityCode, CountryCode, AttributeCode, comms_dict, \
+        rev_lookup, valid_codes, code_lookup
     from data.sources.usda.api_wrappers.esr_api import USDAESR
     from data.sources.usda.api_wrappers.esr_staging_api import USDAESRStaging
     from data.sources.usda.esr_csv_processor import ESRCSVProcessor, process_esr_csv
+    from data.sources.eia.EIA_API import EIAClient, PetroleumClient, NaturalGasClient
+    from data.sources.eia.api_tools import NatGasHelper as NGHelper
 except ImportError as e:
     print(f"Warning: Could not import USDA modules: {e}")
     # Provide None or mock objects
@@ -68,7 +71,8 @@ except ImportError as e:
 
 # Import utilities
 try:
-    from utils import walk_dict, key_to_name
+    from utils.data_tools import walk_dict, key_to_name, convert_to_long
+
 except ImportError:
     # Provide simple fallback implementations
     def walk_dict(d, parent_key=()):
@@ -139,7 +143,8 @@ class TableClient:
                 print(f"Warning: Could not initialize Google Drive client: {e}")
                 self.gdrive_enabled = False
         elif gdrive_config and not HAS_GDRIVE_INTEGRATION:
-            print("Warning: Google Drive config provided but integration not available. Install google-api-python-client.")
+            print(
+                "Warning: Google Drive config provided but integration not available. Install google-api-python-client.")
 
         if map_file:
             try:
@@ -152,14 +157,14 @@ class TableClient:
         else:
             self.mapping = {}
 
-    def available_keys(self):
+    def available_keys(self, use_prefix=True):
         """Get available keys from HDF5 store"""
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
                 all_keys = list(store.keys())
                 print(f"Raw store keys: {all_keys}")  # Debug logging
-                
-                if hasattr(self, 'prefix') and self.prefix:
+
+                if hasattr(self, 'prefix') and self.prefix and use_prefix:
                     # Filter keys that start with the prefix
                     prefix_with_slash = f"/{self.prefix}/"
                     tables = []
@@ -173,7 +178,7 @@ class TableClient:
                     # Remove leading slash from all keys
                     tables = [k[1:] if k.startswith('/') else k for k in all_keys]
                     print(f"All keys (no prefix filter): {tables}")  # Debug logging
-                    
+
             return tables
         except Exception as e:
             print(f"Error accessing HDF5 store: {e}")
@@ -188,14 +193,14 @@ class TableClient:
                     full_key = f'{self.prefix}/{key}'
                 else:
                     full_key = key
-                
+
                 # Ensure key starts with '/' for HDF5 compatibility
                 if not full_key.startswith('/'):
                     full_key = f'/{full_key}'
-                
+
                 print(f"Attempting to access key: {full_key}")  # Debug logging
                 print(f"Available keys: {list(store.keys())}")  # Debug logging
-                
+
                 table = store[full_key]
 
             col_value = table.columns[0] if self.data_col is None else self.data_col
@@ -214,18 +219,18 @@ class TableClient:
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
                 print(f"Available keys in store: {list(store.keys())}")  # Debug logging
-                
+
                 for k in keys:
                     # Construct the full key path
                     if hasattr(self, 'prefix') and self.prefix and use_prefix:
                         full_key = f'{self.prefix}/{k}'
                     else:
                         full_key = k
-                    
+
                     # Ensure key starts with '/' for HDF5 compatibility
                     if not full_key.startswith('/'):
                         full_key = f'/{full_key}'
-                    
+
                     try:
                         print(f"Attempting to access key: {full_key}")  # Debug logging
                         table = store[full_key]
@@ -271,45 +276,45 @@ class TableClient:
             Dict mapping old keys to new keys
         """
         rename_map = {}
-        
+
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
                 all_keys = list(store.keys())
-                
+
                 # Find keys that match the pattern
                 matching_keys = [k for k in all_keys if old_pattern in k]
-                
+
                 if not matching_keys:
                     print(f"No keys found matching pattern '{old_pattern}'")
                     return rename_map
-                
+
                 print(f"Found {len(matching_keys)} keys matching pattern '{old_pattern}':")
                 for key in matching_keys:
                     new_key = key.replace(old_pattern, new_pattern)
                     rename_map[key] = new_key
                     print(f"  {key} -> {new_key}")
-                
+
                 if dry_run:
                     print("\nDry run mode - no changes made. Set dry_run=False to apply changes.")
                     return rename_map
-            
+
             # Actually perform the rename operation
             print(f"\nRenaming {len(rename_map)} tables...")
-            
+
             with pd.HDFStore(self.table_db, mode='a') as store:
                 for old_key, new_key in rename_map.items():
                     try:
                         # Read data from old key
                         data = store[old_key]
-                        
+
                         # Write to new key
                         store[new_key] = data
                         print(f"✓ Copied {old_key} -> {new_key}")
-                        
+
                         # Remove old key
                         del store[old_key]
                         print(f"✓ Removed {old_key}")
-                        
+
                     except Exception as e:
                         print(f"✗ Error renaming {old_key} -> {new_key}: {e}")
                         # Try to clean up if new key was created but old key couldn't be deleted
@@ -318,12 +323,12 @@ class TableClient:
                                 del store[new_key]
                         except:
                             pass
-            
+
             print(f"\nCompleted renaming {len(rename_map)} tables")
-            
+
         except Exception as e:
             print(f"Error during rename operation: {e}")
-            
+
         return rename_map
 
     def list_all_tables(self) -> List[str]:
@@ -331,11 +336,11 @@ class TableClient:
         try:
             with pd.HDFStore(self.table_db, mode='r') as store:
                 all_keys = list(store.keys())
-                
+
                 print(f"HDF5 Store: {self.table_db}")
                 print(f"Total tables: {len(all_keys)}")
                 print("-" * 60)
-                
+
                 for key in sorted(all_keys):
                     try:
                         data = store[key]
@@ -346,12 +351,43 @@ class TableClient:
                         print(f"{key:<40} {shape_info}")
                     except Exception as e:
                         print(f"{key:<40} Error: {e}")
-                        
+
                 return all_keys
-                
+
         except Exception as e:
             print(f"Error listing tables: {e}")
             return []
+
+    def update_from_csv(self, key_name: str, csv_source: str, clean_function: object, clean_params=None,
+                        read_csv_params=None, use_prefix=True, metadata=None):
+        """
+
+        :param key_name: key to save to table_db
+        :param csv_source: string of csv location
+        :param clean_function: function used to clean data, first argument should be for input data
+        :param clean_params: parameters to be unpacked when cleaning
+        :param read_csv_params: parameters of pd.read_csv
+        :return: Bool
+        """
+        if read_csv_params is None:
+            read_csv_params = {}
+        if clean_params is None:
+            clean_params = {}
+        data = pd.read_csv(csv_source, **read_csv_params)
+
+        table_data = clean_function(data, **clean_params)
+        available_tables = {s.split('/')[0] for s in self.available_keys(use_prefix=False)}
+
+        if self.prefix and use_prefix and self.prefix in available_tables:
+            return self.update_table_data(f'{key_name}', data=table_data, use_prefix=use_prefix)
+
+        elif key_name.split('/')[0] in available_tables:
+            return self.update_table_data(f'{key_name}', data=table_data, use_prefix=False)
+        else:
+            print(f"Failed to detect a valid table for {key_name}")
+            print(f"Is {self.prefix} or {key_name.split('/')[0]} in an existing table?")
+
+        return
 
     def update_table_data(self, key, data, use_prefix=True, metadata=None):
         """
@@ -370,23 +406,23 @@ class TableClient:
             if data is None or data.empty:
                 print(f"Warning: No data provided for key {key}")
                 return False
-            
+
             # Construct the full key path
             if hasattr(self, 'prefix') and self.prefix and use_prefix:
                 full_key = f'{self.prefix}/{key}'
             else:
                 full_key = key
-            
+
             # Ensure key starts with '/' for HDF5 compatibility
             if not full_key.startswith('/'):
                 full_key = f'/{full_key}'
-            
+
             # Store the data using HDF5
             data.to_hdf(self.table_db, key=full_key, mode='a', format='table', data_columns=True)
-            
+
             print(f"Successfully stored {len(data)} rows to key: {full_key}")
             print(f"Database: {self.table_db}")
-            
+
             # Store metadata if provided
             if metadata:
                 metadata_key = f"{full_key}_metadata"
@@ -397,9 +433,9 @@ class TableClient:
                     print(f"Stored metadata to: {metadata_key}")
                 except Exception as e:
                     print(f"Warning: Could not store metadata: {e}")
-            
+
             return True
-            
+
         except Exception as e:
             print(f"Error storing data to key {key}: {e}")
             import traceback
@@ -412,9 +448,9 @@ class TableClient:
             return self.get_keys(item, use_prefix=True, use_simple_name=self.rename)
         elif isinstance(item, str):
             return self.get_key(item, use_prefix=True, use_simple_name=self.rename)
-    
+
     # Google Drive Integration Methods
-    
+
     def sync_from_gdrive(self, file_identifier: Optional[str] = None, force_download: bool = False):
         """
         Sync .h5 data from Google Drive to local storage.
@@ -426,17 +462,17 @@ class TableClient:
         if not self.gdrive_enabled:
             print("Google Drive integration not enabled")
             return
-        
+
         if file_identifier:
             # Sync specific file
             try:
                 local_path = self.gdrive_client.download_h5_file(file_identifier, force_download=force_download)
-                
+
                 # Copy to our table database location
                 import shutil
                 shutil.copy2(local_path, self.table_db)
                 print(f"Synced {file_identifier} to local database")
-                
+
             except Exception as e:
                 print(f"Error syncing file {file_identifier}: {e}")
         else:
@@ -447,9 +483,9 @@ class TableClient:
                     print(f"Downloaded {logical_name} ({file_id}) to {local_path}")
                 except Exception as e:
                     print(f"Error syncing {logical_name}: {e}")
-    
-    def get_key_from_gdrive(self, key: str, file_identifier: Optional[str] = None, 
-                           use_simple_name: bool = True, force_download: bool = False):
+
+    def get_key_from_gdrive(self, key: str, file_identifier: Optional[str] = None,
+                            use_simple_name: bool = True, force_download: bool = False):
         """
         Get data key directly from Google Drive .h5 file.
         
@@ -465,7 +501,7 @@ class TableClient:
         if not self.gdrive_enabled:
             print("Google Drive integration not enabled, falling back to local")
             return self.get_key(key, use_simple_name=use_simple_name)
-        
+
         try:
             # Use the database file mapping if no specific file provided
             if file_identifier is None:
@@ -473,44 +509,44 @@ class TableClient:
                 # This assumes the database name maps to a Google Drive file
                 db_name = self.table_db.stem  # Get filename without extension
                 file_identifier = self.gdrive_client.file_mappings.get(db_name)
-                
+
                 if not file_identifier:
                     print(f"No Google Drive mapping found for {db_name}, using local file")
                     return self.get_key(key, use_simple_name=use_simple_name)
-            
+
             # Construct the full key path
             if hasattr(self, 'prefix') and self.prefix:
                 full_key = f'{self.prefix}/{key}'
             else:
                 full_key = key
-            
+
             # Ensure key starts with '/' for HDF5 compatibility
             if not full_key.startswith('/'):
                 full_key = f'/{full_key}'
-            
+
             # Load data from Google Drive
             data = self.gdrive_client.load_h5_data(file_identifier, full_key, force_download=force_download)
-            
+
             # Apply column renaming if requested
             if use_simple_name and not data.empty:
                 col_value = data.columns[0] if self.data_col is None else self.data_col
                 if col_value in data.columns:
                     new_name = key_to_name(key)
                     data = data.rename({col_value: new_name}, axis=1)
-            
+
             return data
-            
+
         except Exception as e:
             print(f"Error getting key {key} from Google Drive: {e}")
             print("Falling back to local file")
             return self.get_key(key, use_simple_name=use_simple_name)
-    
+
     def list_gdrive_files(self):
         """List available .h5 files on Google Drive."""
         if not self.gdrive_enabled:
             print("Google Drive integration not enabled")
             return []
-        
+
         try:
             files = self.gdrive_client.get_available_files()
             print(f"Found {len(files)} .h5 files on Google Drive:")
@@ -521,7 +557,7 @@ class TableClient:
         except Exception as e:
             print(f"Error listing Google Drive files: {e}")
             return []
-    
+
     def get_gdrive_keys(self, file_identifier: str):
         """
         Get available keys from a Google Drive .h5 file.
@@ -535,13 +571,13 @@ class TableClient:
         if not self.gdrive_enabled:
             print("Google Drive integration not enabled")
             return []
-        
+
         try:
             return self.gdrive_client.get_h5_keys(file_identifier)
         except Exception as e:
             print(f"Error getting keys from Google Drive file {file_identifier}: {e}")
             return []
-    
+
     def clear_gdrive_cache(self, older_than_days: Optional[int] = None):
         """
         Clear Google Drive cache files.
@@ -552,12 +588,12 @@ class TableClient:
         if not self.gdrive_enabled:
             print("Google Drive integration not enabled")
             return
-        
+
         try:
             self.gdrive_client.gdrive_client.clear_cache(older_than_days)
         except Exception as e:
             print(f"Error clearing Google Drive cache: {e}")
-    
+
     def get_gdrive_status(self):
         """Get status of Google Drive integration."""
         status = {
@@ -565,13 +601,12 @@ class TableClient:
             'has_integration': HAS_GDRIVE_INTEGRATION,
             'client_initialized': self.gdrive_client is not None,
         }
-        
+
         if self.gdrive_enabled and self.gdrive_client:
             status['file_mappings'] = self.gdrive_client.file_mappings
             status['cache_dir'] = str(self.gdrive_client.gdrive_client.cache_dir)
-        
-        return status
 
+        return status
 
 
 class MarketTable:
@@ -687,65 +722,116 @@ class MarketTable:
             return None
 
 
+#############################################################################################################################################
+## Energy Info tables
+############################################################################################################################################
+
 class EIATable(TableClient):
     """EIA data table client"""
+    main_client = EIAClient()
+
+    client_dict = {
+        "NG": {"Client": main_client.natural_gas, 'Helper': NGHelper()},
+        "PET": {"Client": main_client.petroleum, 'Helper': "TODO"}
+    }
 
     def __init__(self, commodity, rename_key_cols=True):
         # Use the loaded mapping
         map_file = PROJECT_ROOT / 'data' / 'sources' / 'eia' / 'data_mapping.toml'
 
-        if API is None:
-            print("Warning: EIA API not available. Using mock client.")
-            client = lambda **kwargs: pd.DataFrame()  # Mock client
-            self.energy_api = None
-        else:
-             self.energy_api = API()
-             client = self.energy_api.get_series
-
-
         super().__init__(
-            client,
+            self.client_dict[commodity],
             store_folder,
             'eia_data.h5',
             key_prefix=commodity,
             map_file=str(map_file),
             rename_on_load=rename_key_cols
         )
+
         self.commodity = self.prefix = commodity
+        self.data_folder = Path(DATA_PATH) / 'EIA'
 
     def api_update(self, series, **kwargs):
 
         return
 
-    def api_update_via_route(self, route_params:dict ,key:str, simple_col_names=True, use_prefix=True ):
+    def api_update_via_route(self, route: str, facet_params: dict, key: str, simple_col_names=True, use_prefix=True):
         """
         :param route_params:
         :param series:
         :return:
         """
-        data_series = self.get_series_via_route(**route_params)
+        data_series = self.get_series_via_route(route, )
         self.update_table_data(data=data_series, key=key, use_prefix=use_prefix)
 
         return
 
-        
-
-    def get_series_via_route(self, route, series,start_date=None, end_date=None, **kwargs):
+    def get_series_via_route(self, route: str, facet_params: dict, start_date=None, end_date=None, **kwargs):
         date_params = {}
         if start_date:
             date_params.update({
-                'start_date':start_date
-                })
+                'start': start_date
+            })
         if end_date:
             date_params.update({
-                'end_date':end_date
-                })
+                'end': end_date
+            })
 
-        return self.energy_api.get_series_via_route(route=route, series=series, **date_params, **kwargs)
+        return self.client.get_all_data(route, data_columns=["unit", "value"], facets=facet_params, **date_params)
+
+    def update_overview(self, key_name="overview", use_prefix=True, folder_name=None, csv_name=None,
+                        custom_function=None, custom_params=None):
+
+        if use_prefix:
+            file = self.data_folder / self.prefix.upper() / "overview.csv"
+        else:
+            if folder_name and csv_name:
+                file = Path(folder_name) / csv_name
+            else:
+                "Folder and csv name required"
+                raise FileExistsError
+
+        if not custom_function:
+            if self.update_from_csv(key_name, file, convert_to_long):
+                print(f"Successfully updated {self.prefix}/{key_name}")
+        else:
+            if not custom_params:
+                custom_params = {}
+            self.update_from_csv(key_name, file, custom_function, clean_params=custom_params)
+
+    def update_consumption_by_state(self, save=True, key="consumption/by_state", prefix=True, table=None):
+        if self.prefix:
+            df = self.client_dict[self.prefix]['Helper'].consumption_breakdown()
+            full_key = f'{self.prefix}/{key}'
+        elif table:
+            df = self.client_dict[table]['Helper'].consumption_breakdown()
+            full_key = f'{table}/{key}'
+        else:
+            print("Unable to locate commodity name")
+            print(f"If a prefix is not used {table} must be given a value")
+            raise KeyError
+
+        if save:
+            df.to_hdf(self.table_db, key=full_key)
+            try:
+                test_df = self.get_key(full_key, use_prefix=False, use_simple_name=False)
+            except KeyError:
+                raise KeyError
+            else:
+                if test_df.empty:
+                    print(f"Saved key is empty")
+                    return False
+                else:
+                    print(f"Key {full_key} Successfully saved!")
+
+        return
 
 
-
+#############################################################################################################################################
+## Agricultural tables
+############################################################################################################################################
 # Initialize QuickStats client
+
 if QuickStatsClient:
     _quickstats_client = QuickStatsClient()
 else:
@@ -755,9 +841,10 @@ nass_info = {
     'key': os.getenv('NASS_TOKEN'),
     'client': lambda x: _quickstats_client.query_df_numeric(**x) if _quickstats_client else None}
 
+
 # National Agricultural Stats
 class NASSTable(TableClient):
-    with open(Path(PROJECT_ROOT, 'data', 'sources','usda' ,'data_mapping.toml')) as map_file:
+    with open(Path(PROJECT_ROOT, 'data', 'sources', 'usda', 'data_mapping.toml')) as map_file:
         table_map = toml.load(map_file)
 
     def __init__(self,
@@ -769,7 +856,6 @@ class NASSTable(TableClient):
         self.mapping = self.table_map[prefix] if prefix else self.table_map
 
         return
-
 
     def get_descs(self,
                   param_value='short_desc'):
@@ -783,11 +869,11 @@ class NASSTable(TableClient):
                    commodity_desc=None,
                    freq_desc_preference='MONTHLY',
                    agg_level=None,
-                   year_ge:str=None,
-                   year_lt:str=None,
-                   state = None,
-                   county = None,
-                   year = None,
+                   year_ge: str = None,
+                   year_lt: str = None,
+                   state=None,
+                   county=None,
+                   year=None,
                    use_prefix=False, **filters):
         ''' Used to write tables to the store using USDA's NASS API '''
         agg_level = 'NATIONAL' if agg_level is None else agg_level
@@ -803,7 +889,7 @@ class NASSTable(TableClient):
         params = {}
         params.update({
             "source_desc": "SURVEY",
-            'sector_desc':sector_desc.upper(),
+            'sector_desc': sector_desc.upper(),
             'group_desc': group_desc.upper(),
             "commodity_desc": commodity_desc.upper(),
             'agg_level_desc': agg_level.upper(),
@@ -818,20 +904,20 @@ class NASSTable(TableClient):
             })
         if county is not None:
             params.update({
-                'county_name':county
-                })
+                'county_name': county
+            })
         if year and not year_ge:
             if isinstance(year, str):
                 params.update({
-                    'year':year
+                    'year': year
                 })
         if year_ge:
             params.update({
-                'year__GE':year_ge
+                'year__GE': year_ge
             })
         if year_lt:
             params.update({
-                'year__LT':year_lt
+                'year__LT': year_lt
             })
 
         try:
@@ -874,11 +960,11 @@ class NASSTable(TableClient):
                         df.index = df_dates
                         df['date'] = df.index
                         date_calculation_success = True
-                        if key is None: 
+                        if key is None:
                             key = f'{short_desc.lower()}'
                     else:
                         print(f'calc_dates utility not available for {short_desc}')
-                        
+
                 except Exception as e:
                     print(f'Series {short_desc} failed at calculating datetimes using calc_dates utility')
                     print(f'Error: {e}')
@@ -893,14 +979,14 @@ class NASSTable(TableClient):
                             # Filter out invalid end codes
                             df = df[df['end_code'].astype(str).str.isnumeric()]
                             df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
-                            
+
                             # Create date using year and month (end_code)
                             df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
                             df['date'] = pd.to_datetime(df['date'], errors='coerce')
                             df.index = df['date']
                             date_calculation_success = True
                             print(f'Used fallback date calculation for {short_desc}')
-                            
+
                         elif 'year' in df.columns:
                             # If only year is available, use December 31st
                             df['date'] = df['year'].astype(str) + '-12-31'
@@ -908,10 +994,10 @@ class NASSTable(TableClient):
                             df.index = df['date']
                             date_calculation_success = True
                             print(f'Used year-only date calculation for {short_desc}')
-                            
+
                     except Exception as fallback_error:
                         print(f'Fallback date calculation also failed for {short_desc}: {fallback_error}')
-                
+
                 # If all date calculations failed, create a simple index
                 if not date_calculation_success:
                     print(f'Warning: No date column created for {short_desc} - using row index')
@@ -939,7 +1025,7 @@ class NASSTable(TableClient):
                 try:
                     df.sort_index(inplace=True)
                     df[key_to_name(key)] = clean_col(df['Value'])
-                    
+
                     if use_prefix:
                         table_key = f'{self.prefix}/{key}'
                     else:
@@ -961,7 +1047,7 @@ class NASSTable(TableClient):
                             storage_columns.append("state_ansi")
                         if 'state_name' in df.columns:
                             storage_columns.append("state_name")
-                    
+
                     # Add essential county-level columns including FIPS codes
                     if agg_level == "COUNTY":
                         if 'county_name' in df.columns:
@@ -976,19 +1062,18 @@ class NASSTable(TableClient):
                         if 'location_desc' in df.columns:
                             storage_columns.append("location_desc")
 
-                    
                     storage_columns.append(key_to_name(key))  # This is the processed value column
-                    
+
                     if 'year' in df.columns:
                         storage_columns.append('year')
                     if 'end_code' in df.columns:
                         storage_columns.append('end_code')
-                    
+
                     # Store only the columns that exist
                     df[storage_columns].to_hdf(self.table_db, key=f'{table_key}')
                     print(f'USDA Statistic {short_desc} saved to {Path(self.table_db)} in key {table_key}')
                     return True
-                    
+
                 except Exception as storage_error:
                     print(f'Error storing {short_desc}: {storage_error}')
                     return False
@@ -996,12 +1081,12 @@ class NASSTable(TableClient):
                 print(f'No data to store for {short_desc}')
                 return False
 
-    def api_update_all (self):
+    def api_update_all(self):
         failed = {}
         for k, v in walk_dict(self.mapping):
             table_key = f''
             for i in range(len(k)):
-                table_key = table_key+'/'+ k[i]
+                table_key = table_key + '/' + k[i]
             try:
                 self.api_update(short_desc=v, key=table_key)
 
@@ -1027,7 +1112,7 @@ class NASSTable(TableClient):
             # Create the table key from tuple
             table_key = f'/{commodity}'
             for i in range(len(multi_key)):
-                table_key = table_key +'/'+ multi_key[i]
+                table_key = table_key + '/' + multi_key[i]
 
             original_keys.append(table_key)
             table_key = table_key[:-1] if table_key.endswith('/') else table_key
@@ -1036,9 +1121,11 @@ class NASSTable(TableClient):
 
         missed_keys = [*set(original_keys).difference(successful_keys)]
 
-        return print(f'{len(successful_keys)}/{len(original_keys)} Successfully downloaded.\n\n Keys {missed_keys} failed to download')
+        return print(
+            f'{len(successful_keys)}/{len(original_keys)} Successfully downloaded.\n\n Keys {missed_keys} failed to download')
 
-    def _get_acres_planted(self, commodity_desc:str, agg_level='COUNTY', update_keys=False, year=None, start_year=2010, end_year=2025):
+    def _get_acres_planted(self, commodity_desc: str, agg_level='COUNTY', update_keys=False, year=None, start_year=2010,
+                           end_year=2025):
         """
         Fetch Acres Planted for an area
         Args:
@@ -1056,7 +1143,7 @@ class NASSTable(TableClient):
             if isinstance(year, int):
                 year = str(year)
 
-            date_params = {"year":year}
+            date_params = {"year": year}
 
         req_params = {
             "source_desc": "SURVEY",
@@ -1067,7 +1154,7 @@ class NASSTable(TableClient):
             "domain_desc": "TOTAL",
             "agg_level_desc": agg_level,
             **date_params
-                      }
+        }
         # Debug: Print parameters being passed to API
         print(f"DEBUG _get_acres_planted() params: {req_params}")
         acres_df = self.client(req_params)
@@ -1077,14 +1164,15 @@ class NASSTable(TableClient):
             return False
         else:
             if update_keys:
-                acres_df.to_hdf(self.table_db, key=f"/{commodity_desc.lower()}/production/acres_planted/{start_year}_{end_year}")
+                acres_df.to_hdf(self.table_db,
+                                key=f"/{commodity_desc.lower()}/production/acres_planted/{start_year}_{end_year}")
 
         return acres_df
 
     async def api_update_multi_year_async(self, short_desc: str, start_year: int, end_year: int,
-                                         commodity_desc: str = None, agg_level: str = 'NATIONAL',
-                                         state: str = None, county: str = None, max_concurrent: int = 3,
-                                         freq_desc_preference: str = 'MONTHLY', key_desc=None) -> Dict[str, any]:
+                                          commodity_desc: str = None, agg_level: str = 'NATIONAL',
+                                          state: str = None, county: str = None, max_concurrent: int = 3,
+                                          freq_desc_preference: str = 'MONTHLY', key_desc=None) -> Dict[str, any]:
         """
         Update NASS data for multiple years using async requests for speed.
         
@@ -1104,12 +1192,12 @@ class NASSTable(TableClient):
         """
         if not _quickstats_client:
             raise RuntimeError("QuickStatsClient not available")
-            
+
         if not commodity_desc:
             commodity_desc = short_desc.split(' ')[0]
 
         key_part = f'{commodity_desc.lower()}/{key_desc}'
-            
+
         years = list(range(start_year, end_year + 1))
         results = {
             'successful_years': [],
@@ -1118,14 +1206,14 @@ class NASSTable(TableClient):
             'updated_tables': [],
             'summary': {}
         }
-        
+
         # Determine sector and group like api_update method
         if commodity_desc not in ["CATTLE", "BEEF", "HOGS", "PORK"]:
             sector_desc = "CROPS"
             group_desc = "FIELD CROPS"
         else:
             sector_desc, group_desc = "ANIMALS & PRODUCTS", "LIVESTOCK"
-            
+
         # Base parameters that are common to all requests (match api_update format)
         base_params = {
             "source_desc": "SURVEY",
@@ -1136,35 +1224,35 @@ class NASSTable(TableClient):
             'short_desc': short_desc.upper(),
             'domain_desc': 'TOTAL',
         }
-        
+
         if state:
             base_params['state_name'] = state
         if county:
             base_params['county_name'] = county
-            
+
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(max_concurrent)
-        
+
         async def update_single_year(year: int) -> Tuple[int, bool, Optional[str]]:
             """Update a single year with error handling."""
             async with semaphore:
                 try:
                     print(f"Starting NASS update for {short_desc} {year}...")
-                    
+
                     # Create year-specific parameters
                     year_params = {**base_params, 'year': str(year)}
-                    
+
                     # Debug: Print parameters being passed to API (like api_update)
                     print(f"DEBUG async multi-year params: {year_params}")
-                    
+
                     # Use async query
                     df = await _quickstats_client.query_df_numeric_async(**year_params)
-                    
+
                     if df.empty:
                         error_msg = f"No data returned for {short_desc} {year}"
                         print(f"⚠ Warning: {error_msg}")
                         return year, False, error_msg
-                    
+
                     # Process the data (similar to api_update logic)
                     if 'freq_desc' in df.columns:
                         freqs = df['freq_desc'].unique().tolist()
@@ -1177,9 +1265,10 @@ class NASSTable(TableClient):
                                 largest_fq = None
                                 for fq in freqs:
                                     fq_len = len(df.loc[df['freq_desc'] == fq])
-                                    biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (biggest_len, largest_fq)
+                                    biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (
+                                    biggest_len, largest_fq)
                                 df = df.loc[df['freq_desc'] == largest_fq]
-                    
+
                     # Date processing (simplified)
                     date_calculation_success = False
                     try:
@@ -1190,14 +1279,15 @@ class NASSTable(TableClient):
                             date_calculation_success = True
                     except Exception as e:
                         print(f'Date calculation failed for {short_desc} {year}: {e}')
-                    
+
                     # Fallback date handling
                     if not date_calculation_success:
                         try:
                             if 'year' in df.columns and 'end_code' in df.columns:
                                 df = df[df['end_code'].astype(str).str.isnumeric()]
                                 df = df[(df['end_code'].astype(int) >= 1) & (df['end_code'].astype(int) <= 12)]
-                                df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(2) + '-28'
+                                df['date'] = df['year'].astype(str) + '-' + df['end_code'].astype(str).str.zfill(
+                                    2) + '-28'
                                 df['date'] = pd.to_datetime(df['date'], errors='coerce')
                                 df.index = df['date']
                                 date_calculation_success = True
@@ -1208,12 +1298,12 @@ class NASSTable(TableClient):
                                 date_calculation_success = True
                         except Exception as e:
                             print(f'Fallback date calculation failed for {short_desc} {year}: {e}')
-                    
+
                     # Store the data
                     key = f'{key_desc}/{year}'
                     df.sort_index(inplace=True)
                     df[key_to_name(key_desc)] = clean_col(df['Value'])
-                    
+
                     table_key = key
                     # Prepare columns for storage
                     storage_columns = []
@@ -1221,7 +1311,7 @@ class NASSTable(TableClient):
                         storage_columns.append('date')
                     if 'commodity_desc' in df.columns:
                         storage_columns.append('commodity_desc')
-                    
+
                     # Add essential state-level columns for non-national data
                     if agg_level != "NATIONAL":
                         if 'state_alpha' in df.columns:
@@ -1232,7 +1322,7 @@ class NASSTable(TableClient):
                             storage_columns.append("state_fips_code")
                         if 'state_ansi' in df.columns:
                             storage_columns.append("state_ansi")
-                    
+
                     # Add essential county-level columns including FIPS codes
                     if agg_level == "COUNTY":
                         if 'county_name' in df.columns:
@@ -1245,36 +1335,36 @@ class NASSTable(TableClient):
                             storage_columns.append("location_desc")
 
                     storage_columns.append(key_to_name(key))
-                    
+
                     if 'year' in df.columns:
                         storage_columns.append('year')
                     if 'end_code' in df.columns:
                         storage_columns.append('end_code')
-                    
+
                     # Filter to only existing columns
                     existing_columns = [col for col in storage_columns if col in df.columns]
-                    
+
                     # Store to HDF5
                     df[existing_columns].to_hdf(self.table_db, key=f'{table_key}')
                     print(f"✓ Successfully updated {short_desc} {year} - {len(df)} records")
-                    
+
                     return year, True, None
-                    
+
                 except Exception as e:
                     error_msg = f"Failed to update {short_desc} {year}: {str(e)}"
                     print(f"✗ Error: {error_msg}")
                     return year, False, error_msg
-        
+
         # Execute updates concurrently
         print(f"Updating {short_desc} data for years {start_year}-{end_year} (max {max_concurrent} concurrent)")
-        
+
         try:
             # Create tasks for all years
             tasks = [update_single_year(year) for year in years]
-            
+
             # Execute with progress tracking
             completed_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             # Process results
             for result in completed_results:
                 if isinstance(result, Exception):
@@ -1291,37 +1381,37 @@ class NASSTable(TableClient):
                         results['failed_years'].append(year)
                         if error_msg:
                             results['errors'][year] = error_msg
-            
+
             # Generate summary
             total_years = len(years)
             successful_count = len(results['successful_years'])
             failed_count = len(results['failed_years'])
-            
+
             results['summary'] = {
                 'short_desc': short_desc,
                 'year_range': f"{start_year}-{end_year}",
                 'total_years_requested': total_years,
                 'successful_updates': successful_count,
                 'failed_updates': failed_count,
-                'success_rate': f"{successful_count/total_years*100:.1f}%" if total_years > 0 else "0%",
+                'success_rate': f"{successful_count / total_years * 100:.1f}%" if total_years > 0 else "0%",
                 'agg_level': agg_level,
                 'max_concurrent_requests': max_concurrent
             }
-            
+
             print(f"\n📊 NASS Update Summary for {short_desc}:")
             print(f"   Years requested: {total_years}")
             print(f"   Successful: {successful_count}")
             print(f"   Failed: {failed_count}")
             print(f"   Success rate: {results['summary']['success_rate']}")
-            
+
             if results['failed_years']:
                 print(f"   Failed years: {results['failed_years']}")
-                
+
         except Exception as e:
             error_msg = f"Critical error during multi-year update: {str(e)}"
             print(f"💥 {error_msg}")
             results['errors']['critical'] = error_msg
-            
+
         return results
 
     def api_update_multi_year_sync(self, short_desc: str, start_year: int, end_year: int, **kwargs) -> Dict[str, any]:
@@ -1368,23 +1458,23 @@ class NASSTable(TableClient):
         """
         try:
             print(f'Fetching data from URL: {url}')
-            
+
             # Fetch the data from the URL
             import requests
             response = requests.get(url)
             response.raise_for_status()
-            
+
             # Parse the response - QuickStats URLs typically return CSV data
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
-            
+
             if df.empty:
                 print(f'No data returned from URL')
                 return False
-                
+
             print(f'Downloaded {len(df)} rows, {len(df.columns)} columns')
             print(f'Columns: {list(df.columns)}')
-            
+
             # Process the data similar to api_update
             if 'freq_desc' in df.columns:
                 freqs = df['freq_desc'].unique().tolist()
@@ -1396,7 +1486,7 @@ class NASSTable(TableClient):
                         fq_len = len(df.loc[df['freq_desc'] == fq])
                         biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (biggest_len, largest_fq)
                     df = df.loc[df['freq_desc'] == largest_fq]
-                    
+
             # Try to calculate dates
             date_calculation_success = False
             try:
@@ -1409,7 +1499,7 @@ class NASSTable(TableClient):
                         key = f'{df["short_desc"].iloc[0].lower()}'
             except Exception as e:
                 print(f'Date calculation failed: {e}')
-                
+
             # Fallback date handling
             if not date_calculation_success:
                 try:
@@ -1429,26 +1519,26 @@ class NASSTable(TableClient):
                         print(f'Used year-only date calculation')
                 except Exception as e:
                     print(f'Fallback date calculation failed: {e}')
-                    
+
             # Generate key if not provided
             if key is None:
                 if 'short_desc' in df.columns:
                     key = df['short_desc'].iloc[0].lower().replace(' ', '_').replace(',', '')
                 else:
                     key = 'url_data'
-                    
+
             # Store the data
             if not df.empty:
                 try:
                     df.sort_index(inplace=True)
                     if 'Value' in df.columns:
                         df[key_to_name(key)] = clean_col(df['Value'])
-                    
+
                     if use_prefix:
                         table_key = f'{self.prefix}/{key}'
                     else:
                         table_key = key
-                        
+
                     # Prepare columns for storage
                     storage_columns = []
                     if 'date' in df.columns:
@@ -1463,19 +1553,19 @@ class NASSTable(TableClient):
                         storage_columns.append('year')
                     if 'end_code' in df.columns:
                         storage_columns.append('end_code')
-                        
+
                     # Store only existing columns
                     df[storage_columns].to_hdf(self.table_db, key=f'{table_key}')
                     print(f'Data from URL saved to {Path(self.table_db)} in key {table_key}')
                     return True
-                    
+
                 except Exception as storage_error:
                     print(f'Error storing data from URL: {storage_error}')
                     return False
             else:
                 print(f'No data to store from URL')
                 return False
-                
+
         except Exception as e:
             print(f'Error fetching data from URL: {e}')
             import traceback
@@ -1486,6 +1576,7 @@ class NASSTable(TableClient):
 class FASTable(TableClient):
     psd = PSD_API()
     comms, attrs, countries = CommodityCode, AttributeCode, CountryCode
+
     # Shares the same table as NASSTable for convenience’s sake as they link to the same commodities and agency
     def __init__(self, commodity=None):
         super().__init__(client=self.psd, data_folder=DATA_PATH, db_file_name='nass_agri_stats.hd5',
@@ -1502,7 +1593,7 @@ class FASTable(TableClient):
         self.rename = False
 
     def update_psd(self, commodity=None, start_year=1982, end_year=2025):
-        if isinstance(commodity,Enum):
+        if isinstance(commodity, Enum):
             if rev_lookup.get(commodity, False):
                 table_key = rev_lookup[commodity]
                 code = commodity.value
@@ -1566,7 +1657,7 @@ class FASTable(TableClient):
         # Translate commodity table name to ESR commodity code
         # Step 1: commodity (e.g., "cattle") -> commodity_name (e.g., "beef") via esr.alias 
         # Step 2: commodity_name (e.g., "beef") -> commodity_code (e.g., "1701") via esr.commodities
-        
+
         if commodity.lower() in self.esr_codes['alias'].keys():
             # Get the commodity name from the alias (cattle -> beef, hogs -> pork, etc.)
             commodity_name = self.esr_codes['alias'][commodity.lower()]
@@ -1607,16 +1698,18 @@ class FASTable(TableClient):
         if dest_dfs:
             export_year_df = pd.concat(dest_dfs, axis=0)
             export_year_df.to_hdf(self.table_db, f'{table_name}/exports/{market_year}')
-            return_data  = export_year_df if return_key else None
+            return_data = export_year_df if return_key else None
             return return_data
 
         else:
             print(f'Failed to get data for year {market_year} ')
 
+
 class WeatherTable(TableClient):
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None):
         return
+
 
 # Used for tracking finished good exports (Beef, Pork) and Unfinished goods (Corn, Soy) exports
 class ESRTableClient(FASTable):
@@ -1679,8 +1772,8 @@ class ESRTableClient(FASTable):
 
         return data
 
-    def get_multi_year_esr_data(self, commodity, years=None, country=None, 
-                               start_year=None, end_year=None):
+    def get_multi_year_esr_data(self, commodity, years=None, country=None,
+                                start_year=None, end_year=None):
         """
         Get ESR data concatenated from multiple years.
 
@@ -1737,44 +1830,44 @@ class ESRTableClient(FASTable):
             DataFrame with standardized column names and units
         """
         data = data.copy()
-        
+
         # Check for year-specific date columns (like '2025_exports', '2024_exports')
         year_column = f"{year}_exports"
         if year_column in data.columns and 'weekEndingDate' not in data.columns:
             # Rename the year column to weekEndingDate
             data = data.rename(columns={year_column: 'weekEndingDate'})
             print(f"Standardized column '{year_column}' to 'weekEndingDate' for {year} data")
-        
+
         # Ensure weekEndingDate is properly formatted as datetime
         if 'weekEndingDate' in data.columns:
             try:
                 data['weekEndingDate'] = pd.to_datetime(data['weekEndingDate'])
             except Exception as e:
                 print(f"Warning: Could not convert weekEndingDate to datetime for {year}: {e}")
-        
+
         # Fix unit scaling issues for grains
         if 'commodity' in data.columns:
             commodity = data['commodity'].iloc[0].lower() if not data.empty else ''
             # Grains (corn, wheat, soybeans) sometimes have 1000x scaling differences between years
             grain_commodities = ['corn', 'wheat', 'soybeans']
-            
+
             if any(grain in commodity for grain in grain_commodities):
                 # Check if this year's data appears to be in wrong units (too large values)
-                numeric_columns = ['weeklyExports', 'outstandingSales', 'grossNewSales', 
-                                 'currentMYNetSales', 'currentMYTotalCommitment', 
-                                 'nextMYOutstandingSales', 'nextMYNetSales', 'accumulatedExports']
-                
+                numeric_columns = ['weeklyExports', 'outstandingSales', 'grossNewSales',
+                                   'currentMYNetSales', 'currentMYTotalCommitment',
+                                   'nextMYOutstandingSales', 'nextMYNetSales', 'accumulatedExports']
+
                 for col in numeric_columns:
                     if col in data.columns:
                         # Check if values are abnormally high (indicating wrong units)
                         mean_value = data[col].mean()
                         max_value = data[col].max()
-                        
+
                         # If mean > 1000 or max > 100000, likely needs scaling down by 1000
                         if mean_value > 1000 or max_value > 100000:
                             data[col] = data[col] / 1000.0
                             print(f"Applied 1000x scaling correction to {col} for {commodity} {year} data")
-        
+
         # Remove any duplicate date columns that might exist
         date_like_columns = [col for col in data.columns if 'exports' in col and col != 'weekEndingDate']
         for col in date_like_columns:
@@ -1782,7 +1875,7 @@ class ESRTableClient(FASTable):
                 # If we already have weekEndingDate, drop the redundant column
                 data = data.drop(columns=[col])
                 print(f"Removed redundant date column '{col}' from {year} data")
-        
+
         return data
 
     def get_available_commodities(self):
@@ -1818,9 +1911,9 @@ class ESRTableClient(FASTable):
         if not data.empty and 'country' in data.columns:
             return sorted(data['country'].unique().tolist())
         return []
-    
-    def get_top_countries(self, commodity, metric='weeklyExports', top_n=10, 
-                         start_year=None, end_year=None):
+
+    def get_top_countries(self, commodity, metric='weeklyExports', top_n=10,
+                          start_year=None, end_year=None):
         """
         Get top N countries by export metric for dynamic menu population.
         
@@ -1837,18 +1930,18 @@ class ESRTableClient(FASTable):
         try:
             # Get multi-year data for ranking
             data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
-            
+
             if data.empty or metric not in data.columns:
                 return []
-            
+
             # Aggregate by country
             country_totals = data.groupby('country')[metric].sum().sort_values(ascending=False)
-            
+
             # Return top N countries
             top_countries = country_totals.head(top_n).index.tolist()
-            
+
             return top_countries
-            
+
         except Exception as e:
             print(f"Error getting top countries: {e}")
             return []
@@ -1868,42 +1961,43 @@ class ESRTableClient(FASTable):
         """
         try:
             from models.commodity_analytics import ESRAnalyzer
-            
+
             # Get multi-year data
             data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
-            
+
             if data.empty:
                 return {'error': 'no_data'}
-            
+
             # Filter by countries if specified
             if countries:
                 data = data[data['country'].isin(countries)]
-            
+
             # Determine commodity type for analyzer
             grain_commodities = ['corn', 'wheat', 'soybeans']
             oilseed_commodities = ['soybeans']  # soybeans can be both
             livestock_commodities = ['cattle', 'hogs', 'pork']
-            
+
             if commodity.lower() in grain_commodities:
                 commodity_type = 'grains'
             elif commodity.lower() in livestock_commodities:
                 commodity_type = 'livestock'
             else:
                 commodity_type = 'grains'  # default
-            
+
             # Initialize ESR analyzer
             analyzer = ESRAnalyzer(data.set_index('weekEndingDate'), commodity_type)
-            
+
             # Run commitment vs shipment analysis
             results = analyzer.commitment_vs_shipment_analysis()
-            
+
             return results
-            
+
         except Exception as e:
             print(f"Error in commitment vs shipment analysis: {e}")
             return {'error': str(e)}
-    
-    def get_seasonal_patterns_analysis(self, commodity, metric='weeklyExports', start_year=None, end_year=None, countries=None):
+
+    def get_seasonal_patterns_analysis(self, commodity, metric='weeklyExports', start_year=None, end_year=None,
+                                       countries=None):
         """
         Get seasonal patterns analysis using ESRAnalyzer.
         
@@ -1919,40 +2013,40 @@ class ESRTableClient(FASTable):
         """
         try:
             from models.commodity_analytics import ESRAnalyzer
-            
+
             # Get multi-year data
             data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
-            
+
             if data.empty:
                 return {'error': 'no_data'}
-            
+
             # Filter by countries if specified
             if countries:
                 data = data[data['country'].isin(countries)]
-            
+
             # Determine commodity type
             grain_commodities = ['corn', 'wheat', 'soybeans']
             livestock_commodities = ['cattle', 'hogs', 'pork']
-            
+
             if commodity.lower() in grain_commodities:
                 commodity_type = 'grains'
             elif commodity.lower() in livestock_commodities:
                 commodity_type = 'livestock'
             else:
                 commodity_type = 'grains'
-            
+
             # Initialize ESR analyzer
             analyzer = ESRAnalyzer(data.set_index('weekEndingDate'), commodity_type)
-            
+
             # Run seasonal analysis
             seasonal_results = analyzer.analyze_seasonal_patterns(metric)
-            
+
             # Add the original data with marketing year week for plotting
             analysis_data = analyzer.data.copy()
             seasonal_results['data'] = analysis_data.reset_index()
-            
+
             return seasonal_results
-            
+
         except Exception as e:
             print(f"Error in seasonal patterns analysis: {e}")
             return {'error': str(e)}
@@ -2005,8 +2099,8 @@ class ESRTableClient(FASTable):
 
         return grouped
 
-    async def ESR_multi_year_update(self, commodity: str, start_year: int, end_year: int, 
-                                   top_n: int = 10, max_concurrent: int = 3) -> Dict[str, any]:
+    async def ESR_multi_year_update(self, commodity: str, start_year: int, end_year: int,
+                                    top_n: int = 10, max_concurrent: int = 3) -> Dict[str, any]:
         """
         Update ESR data for multiple years using async/await for parallelization.
         Uses asyncio instead of threading because:
@@ -2033,31 +2127,31 @@ class ESRTableClient(FASTable):
             'updated_tables': [],
             'summary': {}
         }
-        
+
         # Create semaphore to limit concurrent requests
         semaphore = asyncio.Semaphore(max_concurrent)
-        
+
         async def update_single_year(year: int) -> Tuple[int, bool, Optional[str]]:
             """Update a single year with error handling."""
             async with semaphore:  # Limit concurrent requests
                 try:
                     print(f"Starting update for {commodity} {year}...")
-                    
+
                     # Use existing synchronous method but wrap in executor if needed
                     # For now, we'll call the sync method in a thread pool
                     loop = asyncio.get_event_loop()
-                    
+
                     # Call the existing ESR_top_sources_update method
                     result = await loop.run_in_executor(
-                        None, 
+                        None,
                         lambda: self.ESR_top_sources_update(
-                            commodity=commodity, 
-                            market_year=year, 
+                            commodity=commodity,
+                            market_year=year,
                             top_n=top_n,
                             return_key=True
                         )
                     )
-                    
+
                     if result is not None and not result.empty:
                         print(f"✓ Successfully updated {commodity} {year} - {len(result)} records")
                         return year, True, None
@@ -2065,22 +2159,22 @@ class ESRTableClient(FASTable):
                         error_msg = f"No data returned for {commodity} {year}"
                         print(f"⚠ Warning: {error_msg}")
                         return year, False, error_msg
-                        
+
                 except Exception as e:
                     error_msg = f"Failed to update {commodity} {year}: {str(e)}"
                     print(f"✗ Error: {error_msg}")
                     return year, False, error_msg
-        
+
         # Execute updates concurrently
         print(f"Updating {commodity} data for years {start_year}-{end_year} (max {max_concurrent} concurrent)")
-        
+
         try:
             # Create tasks for all years
             tasks = [update_single_year(year) for year in years]
-            
+
             # Execute with progress tracking
             completed_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             # Process results
             for result in completed_results:
                 if isinstance(result, Exception):
@@ -2096,41 +2190,41 @@ class ESRTableClient(FASTable):
                         results['failed_years'].append(year)
                         if error_msg:
                             results['errors'][year] = error_msg
-            
+
             # Generate summary
             total_years = len(years)
             successful_count = len(results['successful_years'])
             failed_count = len(results['failed_years'])
-            
+
             results['summary'] = {
                 'commodity': commodity,
                 'year_range': f"{start_year}-{end_year}",
                 'total_years_requested': total_years,
                 'successful_updates': successful_count,
                 'failed_updates': failed_count,
-                'success_rate': f"{successful_count/total_years*100:.1f}%" if total_years > 0 else "0%",
+                'success_rate': f"{successful_count / total_years * 100:.1f}%" if total_years > 0 else "0%",
                 'top_n_countries': top_n,
                 'max_concurrent_requests': max_concurrent
             }
-            
+
             print(f"\n📊 Update Summary for {commodity}:")
             print(f"   Years requested: {total_years}")
             print(f"   Successful: {successful_count}")
             print(f"   Failed: {failed_count}")
             print(f"   Success rate: {results['summary']['success_rate']}")
-            
+
             if results['failed_years']:
                 print(f"   Failed years: {results['failed_years']}")
-            
+
         except Exception as e:
             error_msg = f"Critical error during multi-year update: {str(e)}"
             print(f"💥 {error_msg}")
             results['errors']['critical'] = error_msg
-            
+
         return results
 
-    def update_esr_multi_year_sync(self, commodity: str, start_year: int, end_year: int, 
-                                  top_n: int = 10, max_concurrent: int = 3) -> Dict[str, any]:
+    def update_esr_multi_year_sync(self, commodity: str, start_year: int, end_year: int,
+                                   top_n: int = 10, max_concurrent: int = 3) -> Dict[str, any]:
         """
         Synchronous wrapper for the async multi-year update method.
         
@@ -2161,8 +2255,7 @@ class ESRTableClient(FASTable):
                 self.ESR_multi_year_update(commodity, start_year, end_year, top_n, max_concurrent)
             )
 
-
-    def update_esr(self,data :pd.DataFrame, commodity:str,year:int):
+    def update_esr(self, data: pd.DataFrame, commodity: str, year: int):
         if commodity.lower() in self.esr_codes['alias'].keys():
             # Get the commodity name from the alias (cattle -> beef, hogs -> pork, etc.)
             commodity_name = self.esr_codes['alias'][commodity.lower()]
@@ -2183,12 +2276,12 @@ class ESRTableClient(FASTable):
         else:
             return False
 
-    def update_esr_from_csv(self, csv_file_path: str, target_year: int = None, 
-                           validate: bool = True) -> Dict[str, any]:
+    def update_esr_from_csv(self, csv_file_path: str, target_year: int = None,
+                            validate: bool = True) -> Dict[str, any]:
         """
         Update ESR export data from a downloaded CSV file that may contain multiple commodities.
         
-        This method processes a raw ESR CSV download, detects all commodities present,
+        This method consumption_processes a raw ESR CSV download, detects all commodities present,
         cleans the data to standard format, and updates the appropriate 
         {commodity}/exports/{year} tables for each commodity found.
         
@@ -2207,61 +2300,61 @@ class ESRTableClient(FASTable):
         """
         if not process_esr_csv:
             raise ImportError("ESR CSV processor not available. Check imports.")
-            
+
         try:
             print(f"🔄 Processing multi-commodity ESR CSV: {csv_file_path}")
-            
+
             # Read the raw CSV to detect commodities
             raw_df = pd.read_csv(csv_file_path)
             print(f"📊 Raw data shape: {raw_df.shape}")
-            
+
             # Detect all commodities in the file
             detected_commodities = self._detect_all_commodities(raw_df)
             print(f"🎯 Detected commodities: {detected_commodities}")
-            
+
             if not detected_commodities:
                 raise ValueError("No recognizable commodities found in CSV file")
-            
+
             # Process each commodity separately
             commodity_results = {}
             overall_success = True
             total_records = 0
-            
+
             for commodity in detected_commodities:
                 print(f"\n📦 Processing commodity: {commodity}")
-                
+
                 try:
                     # Filter data for this specific commodity
                     commodity_data = self._filter_csv_by_commodity(raw_df, commodity)
-                    
+
                     if commodity_data.empty:
                         print(f"⚠️  No data found for {commodity}")
                         continue
-                    
+
                     # Process and clean the commodity-specific data
                     processor = ESRCSVProcessor()
                     cleaned_data = processor._transform_raw_data(commodity_data, commodity)
-                    
+
                     # Extract year from the data
                     detected_year = processor.extract_year_from_data(cleaned_data)
                     final_year = target_year if target_year is not None else detected_year
-                    
+
                     print(f"📈 {commodity}: {len(cleaned_data)} records for year {final_year}")
-                    
+
                     # Validate data if requested
                     validation_issues = []
                     if validate:
                         is_valid, issues = processor.validate_data(cleaned_data)
                         validation_issues = issues
-                        
+
                         if not is_valid:
                             print(f"⚠️  Validation warnings for {commodity}:")
                             for issue in issues:
                                 print(f"    - {issue}")
-                    
+
                     # Update the data table for this commodity
                     update_success = self.update_esr(cleaned_data, commodity, final_year)
-                    
+
                     # Store results for this commodity
                     commodity_results[commodity] = {
                         'success': update_success,
@@ -2270,20 +2363,22 @@ class ESRTableClient(FASTable):
                         'records_count': len(cleaned_data),
                         'countries_count': cleaned_data['country'].nunique() if not cleaned_data.empty else 0,
                         'date_range': {
-                            'start': cleaned_data['weekEndingDate'].min().strftime('%Y-%m-%d') if not cleaned_data.empty else None,
-                            'end': cleaned_data['weekEndingDate'].max().strftime('%Y-%m-%d') if not cleaned_data.empty else None
+                            'start': cleaned_data['weekEndingDate'].min().strftime(
+                                '%Y-%m-%d') if not cleaned_data.empty else None,
+                            'end': cleaned_data['weekEndingDate'].max().strftime(
+                                '%Y-%m-%d') if not cleaned_data.empty else None
                         },
                         'validation_issues': validation_issues,
                         'table_key': f"{commodity}/exports/{final_year}"
                     }
-                    
+
                     if update_success:
                         print(f"✅ Successfully updated {commodity} data for {final_year}")
                         total_records += len(cleaned_data)
                     else:
                         print(f"❌ Failed to update {commodity} data for {final_year}")
                         overall_success = False
-                        
+
                 except Exception as e:
                     print(f"❌ Error processing {commodity}: {e}")
                     commodity_results[commodity] = {
@@ -2292,11 +2387,11 @@ class ESRTableClient(FASTable):
                         'commodity': commodity
                     }
                     overall_success = False
-            
+
             # Prepare overall results
             successful_commodities = [c for c, r in commodity_results.items() if r.get('success', False)]
             failed_commodities = [c for c, r in commodity_results.items() if not r.get('success', False)]
-            
+
             result = {
                 'overall_success': overall_success,
                 'total_commodities': len(detected_commodities),
@@ -2306,15 +2401,15 @@ class ESRTableClient(FASTable):
                 'commodities': commodity_results,
                 'file_processed': csv_file_path
             }
-            
+
             print(f"\n🎯 Multi-commodity update completed:")
             print(f"   - Total commodities: {len(detected_commodities)}")
             print(f"   - Successful: {len(successful_commodities)}")
             print(f"   - Failed: {len(failed_commodities)}")
             print(f"   - Total records: {total_records}")
-            
+
             return result
-            
+
         except Exception as e:
             error_result = {
                 'overall_success': False,
@@ -2337,14 +2432,14 @@ class ESRTableClient(FASTable):
             List of commodity names found in the data
         """
         commodities = set()
-        
+
         if 'Commodity' in raw_df.columns:
             # Map raw commodity names to our internal names
             commodity_mapping = {
                 'ALL WHEAT': 'wheat',
-                'WHEAT': 'wheat', 
+                'WHEAT': 'wheat',
                 'CORN': 'corn',
-                'CORN - UNMILLED':'corn',
+                'CORN - UNMILLED': 'corn',
                 'SOYBEANS': 'soybeans',
                 'FRESH, CHILLED, OR FROZEN MUSCLE CUTS OF BEEF': 'cattle',
                 'CATTLE': 'cattle',
@@ -2354,9 +2449,9 @@ class ESRTableClient(FASTable):
                 'SORGHUM': 'sorghum',
                 'BARLEY': 'barley'
             }
-            
+
             raw_commodities = raw_df['Commodity'].unique()
-            
+
             for raw_commodity in raw_commodities:
                 if raw_commodity in commodity_mapping:
                     commodities.add(commodity_mapping[raw_commodity])
@@ -2365,7 +2460,7 @@ class ESRTableClient(FASTable):
                     cleaned = str(raw_commodity).lower().strip()
                     if cleaned and len(cleaned) > 1:
                         commodities.add(cleaned)
-        
+
         return sorted(list(commodities))
 
     def _filter_csv_by_commodity(self, raw_df: pd.DataFrame, target_commodity: str) -> pd.DataFrame:
@@ -2381,7 +2476,7 @@ class ESRTableClient(FASTable):
         """
         if 'Commodity' not in raw_df.columns:
             return raw_df
-        
+
         # Reverse mapping to find raw commodity names
         commodity_mapping = {
             'wheat': ['ALL WHEAT', 'WHEAT'],
@@ -2393,14 +2488,14 @@ class ESRTableClient(FASTable):
             'sorghum': ['SORGHUM'],
             'barley': ['BARLEY']
         }
-        
+
         # Find raw commodity names that match our target
         target_raw_names = commodity_mapping.get(target_commodity, [target_commodity.upper()])
-        
+
         # Filter for matching commodities
         mask = raw_df['Commodity'].isin(target_raw_names)
         filtered_df = raw_df[mask].copy()
-        
+
         return filtered_df
 
     def merge_export_years(self, commodity, save_merged=True):
@@ -2415,24 +2510,24 @@ class ESRTableClient(FASTable):
             pd.DataFrame: Merged data from all available export years
         """
         print(f"Merging export years for {commodity}...")
-        
+
         # Get available years for this commodity
         available_years = self.get_available_years(commodity)
-        
+
         if not available_years:
             print(f"No export years found for {commodity}")
             return pd.DataFrame()
-        
+
         print(f"Found years: {available_years}")
-        
+
         all_data = []
         successful_years = []
-        
+
         for year in available_years:
             try:
                 # Get data for this year
                 year_data = self.get_key(f"{commodity}/exports/{year}")
-                
+
                 if year_data is not None and not year_data.empty:
                     # Standardize the data
                     year_data = self._standardize_esr_columns(year_data, year)
@@ -2442,26 +2537,26 @@ class ESRTableClient(FASTable):
                     print(f"  [OK] {year}: {len(year_data)} rows")
                 else:
                     print(f"  [WARNING] {year}: No data")
-                    
+
             except Exception as e:
                 print(f"  [ERROR] {year}: {e}")
                 continue
-        
+
         if not all_data:
             print(f"No data could be loaded for {commodity}")
             return pd.DataFrame()
-        
+
         # Combine all years
         merged_data = pd.concat(all_data, ignore_index=True)
-        
+
         # Sort by marketing year and date
         if 'weekEndingDate' in merged_data.columns:
             merged_data = merged_data.sort_values(['marketing_year', 'weekEndingDate'])
         else:
             merged_data = merged_data.sort_values(['marketing_year'])
-        
+
         print(f"Merged data: {len(merged_data)} total rows from {len(successful_years)} years")
-        
+
         # Save to /exports/all key if requested
         if save_merged:
             try:
@@ -2471,9 +2566,9 @@ class ESRTableClient(FASTable):
                 print(f"[OK] Saved merged data to /{all_key}")
             except Exception as e:
                 print(f"[ERROR] Failed to save merged data: {e}")
-        
+
         return merged_data
-    
+
     def get_merged_export_data(self, commodity, force_refresh=False):
         """
         Get merged export data for a commodity, creating it if it doesn't exist.
@@ -2486,7 +2581,7 @@ class ESRTableClient(FASTable):
             pd.DataFrame: Merged export data from all years
         """
         all_key = f"{commodity}/exports/all"
-        
+
         # Check if merged data already exists
         if not force_refresh:
             try:
@@ -2496,7 +2591,6 @@ class ESRTableClient(FASTable):
                     return existing_data
             except:
                 pass
-        
+
         # Generate merged data
         return self.merge_export_years(commodity, save_merged=True)
-
