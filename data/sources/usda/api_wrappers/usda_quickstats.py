@@ -386,7 +386,7 @@ class QuickStatsClient:
     # ------------------------- Convenience -------------------------
     @staticmethod
     def coerce_value_column(records: List[Dict[str, Any]], *, column: str = "Value") -> None:
-        """In-place convert the 'Value' column values to numeric where possible.
+        """In-place convert the 'Value' columns_col values to numeric where possible.
 
         Non-numeric codes like '(D)', '(Z)' become None.
         """
@@ -399,7 +399,7 @@ class QuickStatsClient:
                     rec[column] = None
 
     def query_df_numeric(self, **filters: Any):
-        """Like query_df but attempts to coerce the 'Value' column to numeric."""
+        """Like query_df but attempts to coerce the 'Value' columns_col to numeric."""
         data = self.query(**filters)
         self.coerce_value_column(data, column="Value")
         if pd is None:

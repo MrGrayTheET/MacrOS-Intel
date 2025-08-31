@@ -75,8 +75,8 @@ def create_seasonal_index(
     ----------
     data:
         Time series values. Must have a :class:`~pandas.DatetimeIndex` or a
-        ``date`` column that can be parsed as dates. If ``data`` is a
-        :class:`~pandas.DataFrame`, the first column will be used.
+        ``date`` columns_col that can be parsed as dates. If ``data`` is a
+        :class:`~pandas.DataFrame`, the first columns_col will be used.
     frequency:
         ``"M"`` for monthly seasonality or ``"W"`` for weekly seasonality.
     scale:

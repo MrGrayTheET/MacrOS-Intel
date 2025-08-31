@@ -22,6 +22,7 @@ APP_PATH = os.getenv('APP_PATH', str(PROJECT_ROOT))
 NASS_TOKEN = os.getenv('NASS_TOKEN', '')
 FAS_TOKEN = os.getenv('FAS_TOKEN', '')
 EIA_KEY = os.getenv('EIA_API_KEY', '')
+NCEI_TOKEN = os.getenv('NCEI_TOKEN', '')
 
 # Create directories if they don't exist
 for path in [DATA_DIR, Path(DATA_PATH), Path(MARKET_DATA_PATH), Path(COT_PATH)]:

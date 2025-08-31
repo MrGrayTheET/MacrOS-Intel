@@ -38,7 +38,7 @@ def load_corn_usage_files():
                 df = pd.read_csv(file_info['file_path'])
                 print(f"  ✅ Successfully read {len(df)} rows from CSV")
                 
-                # Convert date column to datetime if present
+                # Convert date columns_col to datetime if present
                 if 'date' in df.columns:
                     df['date'] = pd.to_datetime(df['date'])
                     print(f"  ✅ Converted date column to datetime")

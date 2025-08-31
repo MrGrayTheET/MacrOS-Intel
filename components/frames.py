@@ -185,7 +185,7 @@ class FundamentalFrame:
         if self.layout == "horizontal":
             content_style = {
                 'display': 'flex',
-                'flex-direction': 'column',
+                'flex-direction': 'columns_col',
                 'width': '100%',
                 'height': self.height,
                 'gap': '10px'
@@ -315,7 +315,7 @@ class MarketFrame:
 
         content_style = {
             'display': 'flex',
-            'flex-direction': 'column' if self.layout == "horizontal" else 'row',
+            'flex-direction': 'columns_col' if self.layout == "horizontal" else 'row',
             'width': '100%',
             'height': self.height,
             'gap': '10px'
@@ -1054,7 +1054,7 @@ class FrameGrid:
                 if 'max_cols' in criteria and len(data.shape) > 1 and data.shape[1] > criteria['max_cols']:
                     return False
 
-            # Check column names
+            # Check columns_col names
             if hasattr(data, 'columns') and 'required_columns' in criteria:
                 required_cols = criteria['required_columns']
                 if not all(col in data.columns for col in required_cols):
@@ -1065,7 +1065,7 @@ class FrameGrid:
                 from datetime import datetime, timedelta
                 max_age = criteria['max_data_age_days']
 
-                # Try to find date column or datetime index
+                # Try to find date columns_col or datetime index
                 date_col = None
                 if hasattr(data, 'index') and pd.api.types.is_datetime64_any_dtype(data.index):
                     latest_date = data.index.max()
@@ -1075,7 +1075,7 @@ class FrameGrid:
                         date_col = date_cols[0]
                         latest_date = pd.to_datetime(data[date_col]).max()
                     else:
-                        return True  # No date column found, assume it's okay
+                        return True  # No date columns_col found, assume it's okay
                 else:
                     return True
 
@@ -1411,12 +1411,12 @@ class FrameGrid:
         if menu_enabled:
             if menu_position == 'top':
                 base_css += f"""
-                .frame-grid-wrapper {{ flex-direction: column; }}
+                .frame-grid-wrapper {{ flex-direction: columns_col; }}
                 .frame-grid-container {{ height: calc(100% - {menu_size.get('height', '160px')} - 20px); }}
                 """
             elif menu_position == 'bottom':
                 base_css += f"""
-                .frame-grid-wrapper {{ flex-direction: column-reverse; }}
+                .frame-grid-wrapper {{ flex-direction: columns_col-reverse; }}
                 .frame-grid-container {{ height: calc(100% - {menu_size.get('height', '160px')} - 20px); }}
                 """
             elif menu_position == 'left':
@@ -1496,9 +1496,9 @@ class FrameGrid:
                 if 'row_span' in pos_config:
                     item_style['grid-row'] += f" / span {pos_config['row_span']}"
             if 'col' in pos_config:
-                item_style['grid-column'] = f"{pos_config['col']}"
+                item_style['grid-columns_col'] = f"{pos_config['col']}"
                 if 'col_span' in pos_config:
-                    item_style['grid-column'] += f" / span {pos_config['col_span']}"
+                    item_style['grid-columns_col'] += f" / span {pos_config['col_span']}"
 
         frame_title = getattr(frame, 'title', f'Frame {index + 1}')
 

@@ -11,7 +11,7 @@ year_pattern = re.compile(r"^(19|20)\d{2}$")
 def calc_dates(df):
     """
     Given a DataFrame with USDA AgriStats schema, detect the
-    appropriate date column (week_ending, or year+begin_code),
+    appropriate date columns_col (week_ending, or year+begin_code),
     build a datetime, set it as the index, and return the new DF.
     """
     df = df.copy()
@@ -167,10 +167,10 @@ def clean_fas(file_path, year_col="Year", skip_rows=4,
     skip_rows : int, default 3
         Number of rows to skip from the top (data starts at row skip_rows+1)
     month_mapping : dict, optional
-        Mapping of column names to month numbers if needed
+        Mapping of columns_col names to month numbers if needed
         e.g., {'Jan': 1, 'Feb': 2, ...} or {'January': 1, 'February': 2, ...}
     value_col_name : str, default 'value'
-        Name for the value column in the reshaped dataframe
+        Name for the value columns_col in the reshaped dataframe
     additional_id_cols : list, optional
         Additional columns to preserve (e.g., ['Partner', 'Partner Code'])
         If None, will automatically detect 'Partner' and 'Partner Code' columns
@@ -190,7 +190,7 @@ def clean_fas(file_path, year_col="Year", skip_rows=4,
     # Read the CSV starting from the specified row
 
 
-    # Get year column
+    # Get year columns_col
     if isinstance(year_col, int):
         year_column = df.iloc[:, year_col]
         year_col_name = df.columns[year_col]
@@ -237,7 +237,7 @@ def clean_fas(file_path, year_col="Year", skip_rows=4,
                         continue
                     elif month_num == 12:
                         # Skip Value.12 as it's the total, not December
-                        print(f"Skipping '{col}' as it appears to be a total column")
+                        print(f"Skipping '{col}' as it appears to be a total columns_col")
                         continue
                 except (ValueError, IndexError):
                     pass
@@ -338,13 +338,13 @@ def reshape_dataframe_to_datetime_index(df, year_col=0, month_mapping=None, valu
     Parameters:
     -----------
     df : pandas.DataFrame
-        Input dataframe with years in first column and months as other columns
+        Input dataframe with years in first columns_col and months as other columns
     year_col : int or str, default 0
         Column index or name containing years
     month_mapping : dict, optional
-        Mapping of column names to month numbers
+        Mapping of columns_col names to month numbers
     value_col_name : str, default 'value'
-        Name for the value column in the reshaped dataframe
+        Name for the value columns_col in the reshaped dataframe
     additional_id_cols : list, optional
         Additional columns to preserve (e.g., ['Partner', 'Partner Code'])
         If None, will automatically detect 'Partner' and 'Partner Code' columns
@@ -355,7 +355,7 @@ def reshape_dataframe_to_datetime_index(df, year_col=0, month_mapping=None, valu
         Dataframe with datetime index (last day of each month) and values
     """
 
-    # Get year column
+    # Get year columns_col
     if isinstance(year_col, int):
         year_column = df.iloc[:, year_col]
         year_col_name = df.columns[year_col]

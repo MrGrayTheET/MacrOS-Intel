@@ -170,7 +170,7 @@ class ESRCSVProcessor:
         # Create DataFrame and sort by date and country
         df = pd.DataFrame(cleaned_data)
         
-        # Convert date column to datetime
+        # Convert date columns_col to datetime
         df['weekEndingDate'] = pd.to_datetime(df['weekEndingDate'])
         
         # Sort by date and country for consistency

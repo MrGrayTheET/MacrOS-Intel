@@ -1,10 +1,6 @@
-import dash
-from dash import Input, Output, State, callback_context
 import pandas as pd
-from pages.esr.esr_utils import get_sample_esr_data, get_multi_year_esr_data, create_empty_figure
+from pages.esr.esr_utils import create_empty_figure
 import plotly.express as px
-from plotly import graph_objects as go
-from components.frames import EnhancedFrameGrid
 from data.data_tables import ESRTableClient
 
 table_client = ESRTableClient()
@@ -66,7 +62,7 @@ def sales_trends_chart_update(chart_ids, store_data=None, **menu_values):
             country_display_mode = menu_values.get('country_display_mode', 'individual')
             date_range = menu_values.get('date_range', [])
             
-            # Get column selections for each chart
+            # Get columns_col selections for each chart
             chart_0_column = menu_values.get('chart_0_column', 'weeklyExports')
             chart_1_column = menu_values.get('chart_1_column', 'outstandingSales')
             chart_2_column = menu_values.get('chart_2_column', 'grossNewSales')
@@ -135,7 +131,7 @@ def sales_trends_chart_update(chart_ids, store_data=None, **menu_values):
             for chart_id in chart_ids:
                 y_column = column_mapping.get(chart_id, 'weeklyExports')
                 
-                # Check if column exists
+                # Check if columns_col exists
                 if y_column not in data.columns:
                     figures.append(create_empty_figure(f"Column '{y_column}' not found in data"))
                     continue
@@ -275,7 +271,7 @@ def dual_frame_commitment_analysis_chart_update(chart_ids, store_data=None, **me
     """
     Update function for dual frame Commitment Analysis page - handles multiple charts.
     Enhanced to support both single chart_id and list of chart_ids for multi-chart updates.
-    Frame 0 Chart 0: Store data with column select
+    Frame 0 Chart 0: Store data with columns_col select
     Other charts: Analytics with sales_backlog, fulfillment_rate, commitment_utilization
     """
     try:
@@ -360,9 +356,9 @@ def dual_frame_commitment_analysis_chart_update(chart_ids, store_data=None, **me
 
 
 def create_store_based_commitment_chart(data, commitment_metric, countries, country_display_mode, chart_id):
-    """Create chart for Frame 0 Chart 0 using store data with column selection"""
+    """Create chart for Frame 0 Chart 0 using store data with columns_col selection"""
     try:
-        # Check if column exists
+        # Check if columns_col exists
         if commitment_metric not in data.columns:
             return create_empty_figure(f"Column '{commitment_metric}' not found in data")
         
@@ -429,7 +425,7 @@ def create_analytics_commitment_chart(data, countries, country_display_mode, cha
     """Create analytics charts for sales_backlog, fulfillment_rate, commitment_utilization"""
     try:
         # Perform commitment vs shipment analysis
-        from models.commodity_analytics import ESRAnalyzer
+        from models.agricultural.agricultural_analytics import ESRAnalyzer
         
         # Handle country display mode for analysis
         analysis_data = data.copy()
@@ -488,7 +484,7 @@ def create_analytics_commitment_chart(data, countries, country_display_mode, cha
             metric = 'sales_backlog'
             title = 'Sales Backlog Analysis'
         
-        # Check if metric column exists in analysis results
+        # Check if metric columns_col exists in analysis results
         if metric not in analysis_data.columns:
             return create_empty_figure(f"Analytics metric '{metric}' not available")
         
@@ -576,7 +572,7 @@ def new_commitment_analysis_chart_update(chart_id: str, store_data=None, **menu_
         filtered_data = data[data['country'].isin(countries)]
         if not filtered_data.empty:
             # Use ESRAnalyzer to aggregate multi-country data
-            from models.commodity_analytics import ESRAnalyzer
+            from models.agricultural.agricultural_analytics import ESRAnalyzer
             aggregated_data = ESRAnalyzer.aggregate_multi_country_data(filtered_data, countries)
             title_suffix = f"All Selected Countries ({len(countries)})"
             chart_data = aggregated_data
@@ -632,7 +628,7 @@ def new_commitment_analysis_chart_update(chart_id: str, store_data=None, **menu_
           'esr_commitment_frame2_chart_0' in chart_id or 
           'esr_commitment_frame2_chart_1' in chart_id):
         # Analytics charts - commitment vs shipment analysis
-        from models.commodity_analytics import ESRAnalyzer
+        from models.agricultural.agricultural_analytics import ESRAnalyzer
         
         # Initialize analyzer with the data
         analyzer = ESRAnalyzer(chart_data.set_index('weekEndingDate'), 'grains')
@@ -706,9 +702,9 @@ def new_commitment_analysis_chart_update(chart_id: str, store_data=None, **menu_
         elif 'esr_commitment_frame2_chart_1' in chart_id:
             # Sales Backlog Analysis
             try:
-                # Check if sales_backlog column exists
+                # Check if sales_backlog columns_col exists
                 if 'sales_backlog' in results_data.columns:
-                    print(f"DEBUG: Found sales_backlog column in results_data")
+                    print(f"DEBUG: Found sales_backlog columns_col in results_data")
                     
                     fig = px.line(
                         results_data.reset_index(),
@@ -731,7 +727,7 @@ def new_commitment_analysis_chart_update(chart_id: str, store_data=None, **menu_
                     
                     return fig
                 else:
-                    print(f"DEBUG: sales_backlog column not found. Available columns: {list(results_data.columns)}")
+                    print(f"DEBUG: sales_backlog columns_col not found. Available columns: {list(results_data.columns)}")
                     # Try sales_backlog_weeks instead
                     if 'sales_backlog_weeks' in results_data.columns:
                         fig = px.line(
@@ -889,7 +885,7 @@ def commitment_metric_chart(chart_id, store_data=None, **menu_values):
         if data.empty:
             return [create_empty_figure("No data for selected criteria")]
         
-        # Check if column exists
+        # Check if columns_col exists
         if commitment_metric not in data.columns:
             return [create_empty_figure(f"Column '{commitment_metric}' not found in data")]
         
@@ -1007,7 +1003,7 @@ def commitment_analytics_chart(chart_ids, store_data=None, **menu_values):
             return handle_error_return("No data for selected criteria", chart_ids)
         
         # Perform commitment vs shipment analysis
-        from models.commodity_analytics import ESRAnalyzer
+        from models.agricultural.agricultural_analytics import ESRAnalyzer
         
         # Handle country display mode for analysis
         analysis_data = data.copy()
@@ -1070,7 +1066,7 @@ def commitment_analytics_chart(chart_ids, store_data=None, **menu_values):
                 metric = 'sales_backlog'
                 title = 'Sales Backlog Analysis'
             
-            # Check if metric column exists in analysis results
+            # Check if metric columns_col exists in analysis results
             if metric not in analysis_data.columns:
                 figures.append(create_empty_figure(f"Analytics metric '{metric}' not available"))
                 continue
@@ -1078,7 +1074,7 @@ def commitment_analytics_chart(chart_ids, store_data=None, **menu_values):
             # Prepare data for charting - ensure weekEndingDate is available
             chart_data = analysis_data.copy()
             if 'weekEndingDate' not in chart_data.columns and chart_data.index.name in ['weekEndingDate', None]:
-                # If weekEndingDate is the index, reset it to a column
+                # If weekEndingDate is the index, reset it to a columns_col
                 chart_data = chart_data.reset_index()
                 if 'index' in chart_data.columns and 'weekEndingDate' not in chart_data.columns:
                     chart_data = chart_data.rename(columns={'index': 'weekEndingDate'})
@@ -1258,7 +1254,7 @@ def seasonal_overlay_chart(chart_ids, store_data=None, **menu_values):
             return handle_error_return("No data for selected countries", chart_ids)
 
         # Generate multi-year seasonal overlay using ESRAnalyzer
-        from models.commodity_analytics import ESRAnalyzer
+        from models.agricultural.agricultural_analytics import ESRAnalyzer
         
         # Determine commodity type from data patterns
         commodity_type = 'grains'  # Default, could be enhanced to detect from data
@@ -1388,7 +1384,7 @@ def seasonal_pattern_chart(chart_ids, store_data=None, **menu_values):
             return handle_error_return("No data for selected countries", chart_ids)
 
         # Generate detailed seasonal analysis using ESRAnalyzer
-        from models.commodity_analytics import ESRAnalyzer
+        from models.agricultural.agricultural_analytics import ESRAnalyzer
         
         # Determine commodity type from data patterns
         commodity_type = 'grains'  # Default, could be enhanced to detect from data
@@ -1557,7 +1553,7 @@ def unified_seasonal_analysis_update(chart_ids, store_data=None, **menu_values):
         # Handle country aggregation
         if country_display_mode == 'sum' and len(countries) > 1:
             # Aggregate data for multiple countries
-            from models.commodity_analytics import ESRAnalyzer
+            from models.agricultural.agricultural_analytics import ESRAnalyzer
             data = ESRAnalyzer.aggregate_multi_country_data(data, countries)
         
         # Filter by date range if provided
@@ -1569,7 +1565,7 @@ def unified_seasonal_analysis_update(chart_ids, store_data=None, **menu_values):
         if data.empty:
             return handle_error_return("No data in specified date range", chart_ids)
         
-        # Ensure we have the required metric column
+        # Ensure we have the required metric columns_col
         if seasonal_metric not in data.columns:
             return handle_error_return(f"Metric '{seasonal_metric}' not found in data", chart_ids)
         
@@ -1913,7 +1909,7 @@ def create_country_analysis_chart(data, country_metric, countries, country_displ
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
         
-        # Check if column exists
+        # Check if columns_col exists
         if country_metric not in data.columns:
             return create_empty_figure(f"Column '{country_metric}' not found in data")
         
@@ -1927,7 +1923,7 @@ def create_country_analysis_chart(data, country_metric, countries, country_displ
         }
         metric_name = metric_labels.get(country_metric, country_metric.title())
         
-        # Create marketing year column if it doesn't exist
+        # Create marketing year columns_col if it doesn't exist
         if 'marketing_year' not in data.columns:
             data = data.copy()
             # USDA marketing year (Oct-Sep for most commodities)

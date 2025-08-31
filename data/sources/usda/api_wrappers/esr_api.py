@@ -291,7 +291,7 @@ class USDAESR:
         elif 'name' in commodities.columns:
             mask = commodities['name'].str.contains(search_term, case=False, na=False)
         else:
-            # If column names are different, search all string columns
+            # If columns_col names are different, search all string columns
             mask = commodities.select_dtypes(include=['object']).apply(
                 lambda x: x.str.contains(search_term, case=False, na=False)
             ).any(axis=1)
@@ -314,7 +314,7 @@ class USDAESR:
         elif 'name' in countries.columns:
             mask = countries['name'].str.contains(search_term, case=False, na=False)
         else:
-            # If column names are different, search all string columns
+            # If columns_col names are different, search all string columns
             mask = countries.select_dtypes(include=['object']).apply(
                 lambda x: x.str.contains(search_term, case=False, na=False)
             ).any(axis=1)

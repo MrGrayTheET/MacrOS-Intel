@@ -180,7 +180,7 @@ def convert_to_long(df:pd.DataFrame, **kwargs) -> pd.DataFrame:
         
     Returns:
         DataFrame with datetime index, metric columns (minus "Natural Gas"), 
-        and unit column if all units are the same
+        and unit columns_col if all units are the same
     """
     # Read the CSV
     
@@ -207,10 +207,10 @@ def convert_to_long(df:pd.DataFrame, **kwargs) -> pd.DataFrame:
         aggfunc='first'
     )
     
-    # Reset index to make date a column, then set as index
+    # Reset index to make date a columns_col, then set as index
     result = result.reset_index().set_index('date')
     
-    # Add unit column if all units are the same
+    # Add unit columns_col if all units are the same
     if len(unique_units) == 1:
         result['unit'] = unique_units[0]
     

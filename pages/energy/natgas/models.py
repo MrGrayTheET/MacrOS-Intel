@@ -322,7 +322,7 @@ class NaturalGasStorageApp(LinearRegressionApp):
         self.price_key = price_key
         self.withdrawal_key = withdrawal_key
         
-        # Get column names
+        # Get columns_col names
         self.storage_col = key_to_name(storage_key)
         self.price_col = key_to_name(price_key)
         self.withdrawal_col = key_to_name(withdrawal_key)

@@ -87,7 +87,7 @@ def import_export_layout(data_type: str = "imports", data_source=None):
                                 value=countries[0] if countries else None,
                                 className='control-dropdown dark-dropdown'
                             )
-                        ], className='control-column-left'),
+                        ], className='control-columns_col-left'),
 
                         html.Div([
                             html.Label("Select Date Range:", className='form-label'),
@@ -98,7 +98,7 @@ def import_export_layout(data_type: str = "imports", data_source=None):
                                 display_format='YYYY-MM-DD',
                                 className='date-picker dark-datepicker'
                             )
-                        ], className='control-column-right')
+                        ], className='control-columns_col-right')
                     ], className='controls-row'),
 
                     # Time series chart
@@ -124,7 +124,7 @@ def import_export_layout(data_type: str = "imports", data_source=None):
                                 value=years[-1] if years else None,
                                 className='control-dropdown dark-dropdown'
                             )
-                        ], className='control-column-left'),
+                        ], className='control-columns_col-left'),
 
                         html.Div([
                             html.Label("Chart Type:", className='form-label'),
@@ -138,7 +138,7 @@ def import_export_layout(data_type: str = "imports", data_source=None):
                                 inline=True,
                                 className='radio-group dark-radio'
                             )
-                        ], className='control-column-right')
+                        ], className='control-columns_col-right')
                     ], className='controls-row'),
 
                     # Breakdown chart
@@ -311,7 +311,7 @@ def simple_esr_chart_update( chart_id: str, **menu_values):
             if countries:
                 data = data[data['country'].isin(countries)]
 
-            # Ensure date column is datetime
+            # Ensure date columns_col is datetime
             if 'weekEndingDate' in data.columns:
                 data['weekEndingDate'] = pd.to_datetime(data['weekEndingDate'])
 

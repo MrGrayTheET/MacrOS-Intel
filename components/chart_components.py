@@ -1,12 +1,10 @@
 from typing import Optional, Tuple, Dict
-
-from plotly import graph_objects as go
-
 from data.data_tables import MarketTable
 from dash import dcc, html
 from datetime import  datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.express as px
 import pandas as pd
 import numpy as np
 
@@ -483,7 +481,7 @@ class FundamentalChart:
         return self.get_chart_figure()
 
     def change_y_column(self, new_y_column):
-        """Change the y-axis column"""
+        """Change the y-axis columns_col"""
         self.y_column = new_y_column
         return self.get_chart_figure()
 
@@ -508,8 +506,6 @@ class FundamentalChart:
                 'sample': self.data.head().to_dict()
             }
         return None
-
-
 
 class MultiChart(FundamentalChart):
     """
@@ -786,7 +782,7 @@ class MultiChart(FundamentalChart):
             **float_style
         }
 
-        # Create column selector dropdown
+        # Create columns_col selector dropdown
         column_options = []
         if self.data is not None:
             column_options = [{'label': col, 'value': col}
@@ -1130,3 +1126,4 @@ class COTPlotter:
                 'net': latest_data['money_manager_net']
             }
         }
+

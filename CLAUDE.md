@@ -42,9 +42,11 @@ The `framework_base/` directory contains clean, reusable framework modules:
   - `usda/`: NASS and FAS API integrations with ESR staging API
     - `api_wrappers/usda_quickstats.py`: QuickStatsClient for USDA/NASS Quick Stats API
   - `eia/`: Energy Information Administration APIs
+    - `EIA_API.py`: Main EIA client with automatic pagination and sub-clients for petroleum, natural gas, electricity, coal
+    - `api_tools.py`: Helper classes and utilities with FIPS codes, data cleaning, regional aggregation
   - `ncei/`: Weather data integration
   - `COT/`: Commodity futures data
-- **data/data_tables.py**: Core data access layer with `TableClient`, `FASTable`, and `ESRTableClient` classes
+- **data/data_tables.py**: Core data access layer with `TableClient`, `FASTable`, `ESRTableClient`, and `EIATable` classes
 - **config.py**: Environment configuration and API keys management
 
 ## Key Development Commands
@@ -228,7 +230,7 @@ grid.print_chart_registry_summary()
 
 ### TableClient System
 ```python
-from data.data_tables import TableClient, FASTable, ESRTableClient, NASSTable
+from data.data_tables import TableClient, FASTable, ESRTableClient, NASSTable, EIATable
 
 # General data access
 client = TableClient()
@@ -245,6 +247,10 @@ esr_data = fas_client.get_esr_data('commodity', year=2024)
 # Enhanced ESR client with additional functionality
 esr_client = ESRTableClient()
 processed_data = esr_client.process_esr_data('cattle')
+
+# EIA energy data access
+eia_client = EIATable('NG', rename_key_cols=True)  # Natural gas data
+petroleum_client = EIATable('PET')  # Petroleum data
 ```
 
 ### Store-Based Data Caching
@@ -416,6 +422,101 @@ These identifiers enable:
 - Standardized location matching across data sources
 - Integration with census and demographic data
 
+## EIA Data Integration
+
+### EIA API Client Architecture
+The EIA integration uses a layered client architecture built on top of the EIA OpenData API v2:
+
+**EIAClient (data/sources/eia/EIA_API.py):**
+- Main client with automatic pagination support for large datasets
+- Sub-clients for different data categories: petroleum, natural_gas, electricity, coal
+- Built-in error handling and request throttling
+- Automatic parameter building with facets, date ranges, and data columns
+
+**EIATable (data/data_tables.py):**
+- Extends TableClient for EIA-specific data handling
+- Maps to EIA commodities: 'NG' (natural gas), 'PET' (petroleum)
+- Uses helper classes from api_tools.py for data processing
+- Stores data in HDF5 format with structured keys
+
+**Helper Classes (data/sources/eia/api_tools.py):**
+- `NatGasHelper`: Natural gas consumption, production data processing
+- `PetroleumHelper`: Petroleum stocks, refinery operations, movements
+- `FacetParams`: Structured parameter building for complex API queries
+- `STATE_FIPS`: State FIPS code mapping for geographic data
+- Data cleaning and regional aggregation utilities
+
+### EIA Data Access Patterns
+
+```python
+from data.data_tables import EIATable
+
+# Initialize EIA table clients
+ng_client = EIATable('NG')  # Natural gas
+pet_client = EIATable('PET')  # Petroleum
+
+# Update consumption data by state
+ng_client.update_consumption_by_state(save=True)
+
+# Update petroleum stocks and production
+pet_client.update_petroleum_stocks()
+pet_client.update_petroleum_production()
+
+# Get regional consumption data
+regional_data = ng_client.get_consumption_by_region(
+    start="2020-01-01", 
+    end="2025-01-01",
+    end_use=["Residential", "Commercial", "Industrial"]
+)
+
+# Access specific data series
+stocks_data = pet_client.get_key('supply/refined_stocks')
+production_data = ng_client.get_key('consumption/by_state')
+```
+
+### EIA Helper Class Usage
+
+```python
+from data.sources.eia.api_tools import NatGasHelper, PetroleumHelper, STATE_FIPS
+
+# Natural gas helper for direct API access
+ng_helper = NatGasHelper()
+consumption_df = ng_helper.consumption_breakdown()
+
+# Petroleum helper with comprehensive methods
+pet_helper = PetroleumHelper()
+refinery_stocks = pet_helper.get_refinery_crude_stocks("2020-01", "2025-01")
+product_movements = pet_helper.get_product_movements("2020-01", "2025-01")
+
+# Use STATE_FIPS for geographic mapping
+texas_fips = STATE_FIPS["TX"]  # Returns "48"
+california_fips = STATE_FIPS["CA"]  # Returns "06"
+```
+
+### EIA Data Cleaning and Processing
+
+The `clean_api_data()` function in api_tools.py provides standardized data processing:
+
+```python
+from data.sources.eia.api_tools import clean_api_data
+
+# Reshape API response to wide format with areas as columns
+cleaned_data = clean_api_data(
+    data=raw_api_response,
+    date_col='period',
+    columns_col='area-name',  # or ('area-name', 'product') for multi-level
+    value_col='value',
+    sum_value_totals=True  # Add US total columns_col
+)
+```
+
+**Key Features:**
+- Automatic date conversion and sorting
+- Pivot tables with areas/products as columns
+- Multi-level column support for complex datasets
+- Optional national totals calculation
+- Error handling for missing or malformed data
+
 ### Callback Architecture Best Practices
 - Use store-based callbacks for heavy data processing and shared data
 - Use function-based callbacks for simple interactions and triggers
@@ -423,4 +524,5 @@ These identifiers enable:
 - Use multi-chart registration for coordinated updates
 - Leverage chart registry for status tracking and debugging
 - Next we need to update all figures to return as a list. The schema, for some reason, expects a list every output (which is fine, just remember it when creating callbacks)
-- Only use `utf-8` when rendering characters. Some unicode characters are not included in the termina;
+- **IMPORTANT**: Only use standard ASCII characters in testing and production code. Avoid emojis and unicode characters as they cause charmap encoding errors in Windows terminals
+- USE ONLY ASCII CHARCTERS

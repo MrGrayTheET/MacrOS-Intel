@@ -281,7 +281,7 @@ def update_esr_data_store(commodity):
             # Debug: Print available columns
             print(f"DEBUG - Available columns in {commodity} data: {list(df.columns)}")
             
-            # Ensure date column is properly formatted
+            # Ensure date columns_col is properly formatted
             if 'weekEndingDate' in df.columns:
                 df['weekEndingDate'] = pd.to_datetime(df['weekEndingDate'])
                 df['weekEndingDate'] = df['weekEndingDate'].dt.strftime('%Y-%m-%d')

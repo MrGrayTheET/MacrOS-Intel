@@ -117,8 +117,12 @@ def add_flow_traces(fig, flows_df, period=None, product=None):
     if product is not None:
         df = df[df["product"] == product]
 
-    COLOR = {"import":"#1f77b4", "export":"#d62728", "inter_padd":"#7f7f7f"}
+    COLOR = {"import":"#1f77b4", "export":"#d62728", "inter_padd":"#7f7f7f", "stocks":"#ff7f0e"}
     traces = []
+    
+    # Track port usage to create slight offsets for overlapping flows
+    import_port_usage = {}  # dest_area -> count
+    export_port_usage = {}  # origin_area -> count
 
     for _, r in df.iterrows():
         dirn = r["direction"]
@@ -135,17 +139,34 @@ def add_flow_traces(fig, flows_df, period=None, product=None):
             dst = r["dest_area"]
             # use PADD centroid as destination
             (lon2,lat2) = PADD_CENTROID[dst]
-            # pick a port in the dest PADD
+            # pick a port in the dest PADD with offset for multiple imports
             port = choose_port(dst, (lon2,lat2))
-            (lon1,lat1) = port
+            # Create slight offset for multiple imports to same destination
+            import_count = import_port_usage.get(dst, 0)
+            import_port_usage[dst] = import_count + 1
+            offset_lon = (import_count * 0.3) - 0.45  # Center around 0
+            offset_lat = (import_count * 0.2) - 0.3
+            (lon1,lat1) = (port[0] + offset_lon, port[1] + offset_lat)
             lon, lat = curve_points(lon1, lat1, lon2, lat2, k=0.18, n=35)
 
         elif dirn == "export":
             src = r["origin_area"]
             (lon1,lat1) = PADD_CENTROID[src]
+            # Create slight offset for multiple exports from same origin
+            export_count = export_port_usage.get(src, 0)
+            export_port_usage[src] = export_count + 1
             port = choose_port(src, (lon1,lat1))
-            (lon2,lat2) = port
+            offset_lon = (export_count * 0.3) - 0.45  # Center around 0
+            offset_lat = (export_count * 0.2) - 0.3
+            (lon2,lat2) = (port[0] + offset_lon, port[1] + offset_lat)
             lon, lat = curve_points(lon1, lat1, lon2, lat2, k=0.18, n=35)
+
+        elif dirn == "stocks":
+            # For stocks, show as a point/circle at the PADD centroid
+            src = r["origin_area"]  # stocks are held at origin_area
+            (lon1,lat1) = PADD_CENTROID[src]
+            # Create a small circle around the centroid for stocks
+            lon, lat = [lon1], [lat1]  # Point marker for stocks
 
         else:
             continue
@@ -162,26 +183,108 @@ def add_flow_traces(fig, flows_df, period=None, product=None):
             hover.append(f"{r.get('product','all').title()} export")
             dst_lbl = r.get("dest_country") or "Foreign"
             hover.append(f"{r['origin_area']} → {dst_lbl}")
+        elif dirn == "stocks":
+            # Show all stock data in one consolidated frame - simplified format
+            stocks_data = df[df['direction'] == 'stocks']
+            
+            # Group stocks by product and calculate totals
+            product_summaries = []
+            for product in stocks_data['product'].unique():
+                product_stocks = stocks_data[stocks_data['product'] == product]
+                total_product_stocks = product_stocks['value_bbl'].sum()
+                
+                # Get current PADD's data for this product
+                current_padd_stocks = product_stocks[product_stocks['origin_area'] == r['origin_area']]
+                padd_value = current_padd_stocks['value_bbl'].iloc[0] if not current_padd_stocks.empty else 0
+                padd_percentage = (padd_value / total_product_stocks * 100) if total_product_stocks > 0 else 0
+                
+                # Use change data from dataframe if available
+                change_text = ""
+                if not current_padd_stocks.empty and 'change_pct' in current_padd_stocks.columns and 'change_direction' in current_padd_stocks.columns:
+                    change_pct = current_padd_stocks['change_pct'].iloc[0]
+                    change_dir = current_padd_stocks['change_direction'].iloc[0]
+                    if pd.notna(change_pct) and change_pct != 0:
+                        change_text = f"{change_dir}{abs(change_pct):.1f}%"
+                    else:
+                        change_text = "No change"
+                else:
+                    change_text = "N/A"
+                
+                # Simplified format: Product, Total Stock, Change%, Percent of Total
+                product_summaries.append(f"{product}: {total_product_stocks:,.0f} bbl, {change_text}, {padd_percentage:.1f}% of total")
+            
+            hover.append(f"Stocks at {r['origin_area']}:")
+            hover.extend(product_summaries)
 
         hover.append(f"Volume: {v:,.0f} bbl")
         if r.get("period"):
             hover.append(f"Period: {r['period']}")
         hovertext = "<br>".join(hover)
 
-        traces.append(go.Scattergeo(
-            lon=lon, lat=lat,
-            mode="lines",
-            line=dict(width=w, color=COLOR[dirn]),
-            hoverinfo="text",
-            text=hovertext,
-            opacity=0.8,
-            name=dirn.capitalize(),
-            showlegend=False
-        ))
+        # Create unique name for each trace to avoid overwriting
+        if dirn == "inter_padd":
+            trace_name = f"{dirn}_{src}_{dst}_{r.get('product', 'unknown')}"
+        elif dirn == "import":
+            src_lbl = r.get("origin_country", "Foreign")
+            trace_name = f"{dirn}_{src_lbl}_{dst}_{r.get('product', 'unknown')}"
+        elif dirn == "export":
+            dst_lbl = r.get("dest_country", "Foreign")
+            trace_name = f"{dirn}_{src}_{dst_lbl}_{r.get('product', 'unknown')}"
+        elif dirn == "stocks":
+            trace_name = f"{dirn}_{src}_{r.get('product', 'unknown')}"
+        else:
+            trace_name = f"{dirn}_unknown"
+
+        # Different trace types for stocks vs flows
+        if dirn == "stocks":
+            # Use markers for stocks, sized by volume
+            marker_size = max(8, min(50, w * 3))  # Scale marker size based on width
+            traces.append(go.Scattergeo(
+                lon=lon, lat=lat,
+                mode="markers",
+                marker=dict(
+                    size=marker_size,
+                    color=COLOR[dirn],
+                    line=dict(width=2, color="white"),
+                    opacity=0.8
+                ),
+                hoverinfo="text",
+                text=hovertext,
+                name=trace_name,
+                showlegend=False,
+                legendgroup=dirn
+            ))
+        else:
+            # Use lines for flows
+            traces.append(go.Scattergeo(
+                lon=lon, lat=lat,
+                mode="lines",
+                line=dict(width=w, color=COLOR[dirn]),
+                hoverinfo="text",
+                text=hovertext,
+                opacity=0.8,
+                name=trace_name,
+                showlegend=False,
+                legendgroup=dirn
+            ))
 
     for tr in traces:
         fig.add_trace(tr)
-    
+
+    fig.add_trace(go.Scattergeo(mode="lines", lon=[None], lat=[None],
+                                line=dict(width=4, color=COLOR["import"]), name="Imports",
+                                legendgroup="import", showlegend=True))
+    fig.add_trace(go.Scattergeo(mode="lines", lon=[None], lat=[None],
+                                line=dict(width=4, color=COLOR["export"]), name="Exports",
+                                legendgroup="export", showlegend=True))
+    fig.add_trace(go.Scattergeo(mode="lines", lon=[None], lat=[None],
+                                line=dict(width=4, color=COLOR["inter_padd"]), name="Inter-PADD",
+                                legendgroup="inter_padd", showlegend=True))
+    fig.add_trace(go.Scattergeo(mode="markers", lon=[None], lat=[None],
+                                marker=dict(size=12, color=COLOR["stocks"], line=dict(width=2, color="white")), 
+                                name="Stocks", legendgroup="stocks", showlegend=True))
+    return fig
+
 # Example usage:
 # fig = make_padd_choropleth()
 # fig.show()

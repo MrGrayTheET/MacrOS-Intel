@@ -68,7 +68,7 @@ class TimeSeriesAnalyzer:
         
         Args:
             data: DataFrame with time series data
-            date_column: Name of date column (or index if None)  
+            date_column: Name of date columns_col (or index if None)
             value_columns: List of numeric columns to analyze (default: all numeric)
         """
         self.data = data.copy()
@@ -418,10 +418,10 @@ class TimeSeriesAnalyzer:
             DataFrame with time series for each group
         """
         if group_column not in self.data.columns:
-            raise ValueError(f"Group column '{group_column}' not found in data")
+            raise ValueError(f"Group columns_col '{group_column}' not found in data")
         
         if value_column not in self.data.columns:
-            raise ValueError(f"Value column '{value_column}' not found in data")
+            raise ValueError(f"Value columns_col '{value_column}' not found in data")
         
         # Aggregate by date and group
         grouped_data = (self.data.groupby([self.data.index, group_column])[value_column]
@@ -629,7 +629,7 @@ class TimeSeriesAnalyzer:
                 continue
             
             stats = {
-                'column': col,
+                'columns_col': col,
                 'count': len(data),
                 'mean': data.mean(),
                 'median': data.median(),

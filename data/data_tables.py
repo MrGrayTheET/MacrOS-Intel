@@ -2,22 +2,12 @@ import datetime
 import os
 from pathlib import Path
 import pandas as pd
-import requests
 import toml
-from copy import deepcopy
-import numpy as np
 from enum import Enum
 import asyncio
-import aiohttp
 from typing import List, Dict, Optional, Tuple
 
-# Google Drive integration
-try:
-    from .google_drive_client import GoogleDriveTableClient, create_gdrive_config_template
-
-    HAS_GDRIVE_INTEGRATION = True
-except ImportError:
-    HAS_GDRIVE_INTEGRATION = False
+# Google Drive integration removed
 
 # Import from config instead of using dotenv directly
 try:
@@ -55,8 +45,9 @@ try:
     from data.sources.usda.api_wrappers.esr_api import USDAESR
     from data.sources.usda.api_wrappers.esr_staging_api import USDAESRStaging
     from data.sources.usda.esr_csv_processor import ESRCSVProcessor, process_esr_csv
-    from data.sources.eia.EIA_API import EIAClient, PetroleumClient, NaturalGasClient
-    from data.sources.eia.api_tools import NatGasHelper as NGHelper
+    from data.sources.eia.EIA_API import EIAClient, PetroleumClient, NaturalGasClient, EIAAPIError
+    from data.sources.eia.api_tools import NatGasHelper as NGHelper, aggregate_regions, CENSUS_REGIONS, \
+        PetroleumHelper as PHelper
 except ImportError as e:
     print(f"Warning: Could not import USDA modules: {e}")
     # Provide None or mock objects
@@ -111,11 +102,12 @@ except Exception as e:
     table_mapping = {}
 
 
+# noinspection PyTypeChecker
 class TableClient:
     """Base class for table data access"""
 
     def __init__(self, client, data_folder, db_file_name, key_prefix=None, map_file=None, api_data_col=None,
-                 rename_on_load=False, gdrive_config=None):
+                 rename_on_load=False):
         self.client = client
         self.data_folder = Path(data_folder)
         self.table_db = Path(self.data_folder, db_file_name)
@@ -131,20 +123,7 @@ class TableClient:
 
         self.client_params = {}
 
-        # Google Drive integration
-        self.gdrive_client = None
-        self.gdrive_enabled = False
-        if gdrive_config and HAS_GDRIVE_INTEGRATION:
-            try:
-                self.gdrive_client = GoogleDriveTableClient(gdrive_config)
-                self.gdrive_enabled = True
-                print(f"Google Drive integration enabled for {db_file_name}")
-            except Exception as e:
-                print(f"Warning: Could not initialize Google Drive client: {e}")
-                self.gdrive_enabled = False
-        elif gdrive_config and not HAS_GDRIVE_INTEGRATION:
-            print(
-                "Warning: Google Drive config provided but integration not available. Install google-api-python-client.")
+        # Google Drive integration removed
 
         if map_file:
             try:
@@ -237,7 +216,7 @@ class TableClient:
                         if isinstance(table, pd.DataFrame):
                             if use_simple_name:
                                 col = key_to_name(k)
-                                # Handle column renaming logic
+                                # Handle columns_col renaming logic
                                 if len(table.columns) == 1:
                                     data = table.rename({table.columns[0]: col}, axis=1)
                                 else:
@@ -442,6 +421,20 @@ class TableClient:
             traceback.print_exc()
             return False
 
+    def delete_keys(self, keys:List):
+        """ Function used to remove keys from table
+            Arguments:
+                keys : keys to be removed
+            """
+        with pd.HDFStore(self.table_db, 'a') as f:
+            for k in keys:
+                if k in f:
+                    f.remove(k)
+                    print(f'{k} successfully deleted')
+                else:
+                    print(f'Failed to find key: {k}')
+        return
+
     def __getitem__(self, item):
         """Allow dict-like access"""
         if isinstance(item, list):
@@ -449,164 +442,7 @@ class TableClient:
         elif isinstance(item, str):
             return self.get_key(item, use_prefix=True, use_simple_name=self.rename)
 
-    # Google Drive Integration Methods
-
-    def sync_from_gdrive(self, file_identifier: Optional[str] = None, force_download: bool = False):
-        """
-        Sync .h5 data from Google Drive to local storage.
-        
-        Args:
-            file_identifier: Specific file to sync (None for all mapped files)
-            force_download: Force re-download even if cached
-        """
-        if not self.gdrive_enabled:
-            print("Google Drive integration not enabled")
-            return
-
-        if file_identifier:
-            # Sync specific file
-            try:
-                local_path = self.gdrive_client.download_h5_file(file_identifier, force_download=force_download)
-
-                # Copy to our table database location
-                import shutil
-                shutil.copy2(local_path, self.table_db)
-                print(f"Synced {file_identifier} to local database")
-
-            except Exception as e:
-                print(f"Error syncing file {file_identifier}: {e}")
-        else:
-            # Sync all mapped files
-            for logical_name, file_id in self.gdrive_client.file_mappings.items():
-                try:
-                    local_path = self.gdrive_client.download_h5_file(file_id, force_download=force_download)
-                    print(f"Downloaded {logical_name} ({file_id}) to {local_path}")
-                except Exception as e:
-                    print(f"Error syncing {logical_name}: {e}")
-
-    def get_key_from_gdrive(self, key: str, file_identifier: Optional[str] = None,
-                            use_simple_name: bool = True, force_download: bool = False):
-        """
-        Get data key directly from Google Drive .h5 file.
-        
-        Args:
-            key: HDF5 key to retrieve
-            file_identifier: Google Drive file ID or logical name
-            use_simple_name: Whether to rename columns
-            force_download: Force re-download even if cached
-            
-        Returns:
-            DataFrame with requested data
-        """
-        if not self.gdrive_enabled:
-            print("Google Drive integration not enabled, falling back to local")
-            return self.get_key(key, use_simple_name=use_simple_name)
-
-        try:
-            # Use the database file mapping if no specific file provided
-            if file_identifier is None:
-                # Try to find the file identifier from mapping
-                # This assumes the database name maps to a Google Drive file
-                db_name = self.table_db.stem  # Get filename without extension
-                file_identifier = self.gdrive_client.file_mappings.get(db_name)
-
-                if not file_identifier:
-                    print(f"No Google Drive mapping found for {db_name}, using local file")
-                    return self.get_key(key, use_simple_name=use_simple_name)
-
-            # Construct the full key path
-            if hasattr(self, 'prefix') and self.prefix:
-                full_key = f'{self.prefix}/{key}'
-            else:
-                full_key = key
-
-            # Ensure key starts with '/' for HDF5 compatibility
-            if not full_key.startswith('/'):
-                full_key = f'/{full_key}'
-
-            # Load data from Google Drive
-            data = self.gdrive_client.load_h5_data(file_identifier, full_key, force_download=force_download)
-
-            # Apply column renaming if requested
-            if use_simple_name and not data.empty:
-                col_value = data.columns[0] if self.data_col is None else self.data_col
-                if col_value in data.columns:
-                    new_name = key_to_name(key)
-                    data = data.rename({col_value: new_name}, axis=1)
-
-            return data
-
-        except Exception as e:
-            print(f"Error getting key {key} from Google Drive: {e}")
-            print("Falling back to local file")
-            return self.get_key(key, use_simple_name=use_simple_name)
-
-    def list_gdrive_files(self):
-        """List available .h5 files on Google Drive."""
-        if not self.gdrive_enabled:
-            print("Google Drive integration not enabled")
-            return []
-
-        try:
-            files = self.gdrive_client.get_available_files()
-            print(f"Found {len(files)} .h5 files on Google Drive:")
-            for file_info in files:
-                size_mb = int(file_info.get('size', 0)) / (1024 * 1024)
-                print(f"  - {file_info['name']} ({size_mb:.1f} MB) - ID: {file_info['id']}")
-            return files
-        except Exception as e:
-            print(f"Error listing Google Drive files: {e}")
-            return []
-
-    def get_gdrive_keys(self, file_identifier: str):
-        """
-        Get available keys from a Google Drive .h5 file.
-        
-        Args:
-            file_identifier: Google Drive file ID or logical name
-            
-        Returns:
-            List of available HDF5 keys
-        """
-        if not self.gdrive_enabled:
-            print("Google Drive integration not enabled")
-            return []
-
-        try:
-            return self.gdrive_client.get_h5_keys(file_identifier)
-        except Exception as e:
-            print(f"Error getting keys from Google Drive file {file_identifier}: {e}")
-            return []
-
-    def clear_gdrive_cache(self, older_than_days: Optional[int] = None):
-        """
-        Clear Google Drive cache files.
-        
-        Args:
-            older_than_days: Only clear files older than this many days (None for all)
-        """
-        if not self.gdrive_enabled:
-            print("Google Drive integration not enabled")
-            return
-
-        try:
-            self.gdrive_client.gdrive_client.clear_cache(older_than_days)
-        except Exception as e:
-            print(f"Error clearing Google Drive cache: {e}")
-
-    def get_gdrive_status(self):
-        """Get status of Google Drive integration."""
-        status = {
-            'enabled': self.gdrive_enabled,
-            'has_integration': HAS_GDRIVE_INTEGRATION,
-            'client_initialized': self.gdrive_client is not None,
-        }
-
-        if self.gdrive_enabled and self.gdrive_client:
-            status['file_mappings'] = self.gdrive_client.file_mappings
-            status['cache_dir'] = str(self.gdrive_client.gdrive_client.cache_dir)
-
-        return status
+    # Google Drive Integration Methods removed
 
 
 class MarketTable:
@@ -730,9 +566,9 @@ class EIATable(TableClient):
     """EIA data table client"""
     main_client = EIAClient()
 
-    client_dict = {
-        "NG": {"Client": main_client.natural_gas, 'Helper': NGHelper()},
-        "PET": {"Client": main_client.petroleum, 'Helper': "TODO"}
+    clients = {
+        "NG": NGHelper(),
+        "PET": PHelper()
     }
 
     def __init__(self, commodity, rename_key_cols=True):
@@ -740,7 +576,7 @@ class EIATable(TableClient):
         map_file = PROJECT_ROOT / 'data' / 'sources' / 'eia' / 'data_mapping.toml'
 
         super().__init__(
-            self.client_dict[commodity],
+            self.clients[commodity].client,
             store_folder,
             'eia_data.h5',
             key_prefix=commodity,
@@ -751,9 +587,6 @@ class EIATable(TableClient):
         self.commodity = self.prefix = commodity
         self.data_folder = Path(DATA_PATH) / 'EIA'
 
-    def api_update(self, series, **kwargs):
-
-        return
 
     def api_update_via_route(self, route: str, facet_params: dict, key: str, simple_col_names=True, use_prefix=True):
         """
@@ -761,7 +594,8 @@ class EIATable(TableClient):
         :param series:
         :return:
         """
-        data_series = self.get_series_via_route(route, )
+        data_series = self.get_series_via_route(route, facet_params, key)
+
         self.update_table_data(data=data_series, key=key, use_prefix=use_prefix)
 
         return
@@ -801,10 +635,10 @@ class EIATable(TableClient):
 
     def update_consumption_by_state(self, save=True, key="consumption/by_state", prefix=True, table=None):
         if self.prefix:
-            df = self.client_dict[self.prefix]['Helper'].consumption_breakdown()
+            df = self.clients["NG"].consumption_breakdown()
             full_key = f'{self.prefix}/{key}'
         elif table:
-            df = self.client_dict[table]['Helper'].consumption_breakdown()
+            df = self.clients[table]['Helper'].consumption_breakdown()
             full_key = f'{table}/{key}'
         else:
             print("Unable to locate commodity name")
@@ -825,9 +659,627 @@ class EIATable(TableClient):
                     print(f"Key {full_key} Successfully saved!")
 
         return
+    def create_update_dict(self, keys, dfs, funcs):
+        update_dict = {}
+        for key, df, func in zip(keys,dfs, funcs):
+            update_dict[key] = {}
+            update_dict[key]['df'] = df
+            update_dict[key]['func'] = func
+
+        return update_dict
+
+    def get_consumption_by_region(self, start="2001-01-31", end="2025-05-31", end_use=None, update_table=False):
+        """
+
+        :param start: start date in format %yyyy-%mm-%dd
+        :param end: date in format %yyyy-%mm-%dd
+        :param end_use: Column to select to sum
+        :return: dataframe
+        """
+        consumption_data = self.get_key('consumption/by_state', use_prefix=True, use_simple_name=False)
+        # noinspection PyTypeChecker
+        filtered_data = consumption_data[(consumption_data['date'] > start) & (consumption_data['date'] < end)]
+
+        end_use = ["Delivered", "Electric Power", "Residential", "Commercial",
+                   "Industrial"] if not end_use and self.prefix == "NG" else end_use
+        df = aggregate_regions(filtered_data, sum_columns=end_use)
+        if update_table:
+            key = f'{self.prefix}/consumption/by_region'
+            df.to_hdf(self.table_db, key=key)
+
+        return df
+
+    def update_petroleum_stocks(self, start="2001-01", end="2025-08", max_concurrent=3):
+        """
+        Update petroleum stocks using async methods for improved performance.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            max_concurrent: Maximum concurrent requests
+        """
+        import asyncio
+        
+        req_helper = self.clients['PET']
+        
+        async def _async_update():
+            # Execute all requests concurrently using async methods
+            refinery_df, refined_df, tank_farm_df = await asyncio.gather(
+                req_helper.get_refinery_crude_stocks_async(start, end, max_concurrent),
+                req_helper.get_product_stocks_async(start, end, max_concurrent),
+                req_helper.get_tank_farm_stocks_async(start, end, max_concurrent),
+                return_exceptions=True
+            )
+            return refinery_df, refined_df, tank_farm_df
+        
+        # Run the async operations
+        try:
+            refinery_df, refined_df, tank_farm_df = asyncio.run(_async_update())
+            
+            # Save the results if successful
+            if not isinstance(tank_farm_df, Exception):
+                tank_farm_df.to_hdf(self.table_db, "PET/supply/tank_crude_stocks")
+                print(f"Saved tank farm stocks: {len(tank_farm_df)} records")
+            else:
+                print(f"Failed to update tank farm stocks: {tank_farm_df}")
+                
+            if not isinstance(refinery_df, Exception):
+                refinery_df.to_hdf(self.table_db, "PET/refineries/crude_stocks")
+                print(f"Saved refinery crude stocks: {len(refinery_df)} records")
+            else:
+                print(f"Failed to update refinery crude stocks: {refinery_df}")
+                
+            if not isinstance(refined_df, Exception):
+                refined_df.to_hdf(self.table_db, "PET/supply/product_stocks")
+                print(f"Saved refined product stocks: {len(refined_df)} records")
+            else:
+                print(f"Failed to update refined product stocks: {refined_df}")
+                
+        except Exception as e:
+            print(f"Failed to update petroleum stocks: {e}")
+            # Fallback to sync methods if async fails
+            print("Falling back to synchronous methods...")
+            try:
+                update_df = req_helper.get_refinery_crude_stocks(start, end)
+                refined_update_df = req_helper.get_product_stocks(start, end)
+                tank_farm_update_df = req_helper.get_tank_farm_stocks(start, end)
+
+                tank_farm_update_df.to_hdf(self.table_db, "PET/supply/tank_crude_stocks")
+                update_df.to_hdf(self.table_db, "PET/refineries/crude_stocks")
+                refined_update_df.to_hdf(self.table_db, "PET/supply/refined_stocks")
+                print("Successfully updated using synchronous methods")
+            except Exception as sync_error:
+                print(f"Synchronous fallback also failed: {sync_error}")
+                raise
+
+    async def update_petroleum_stocks_async(self, start="2001-01", end="2025-08", max_concurrent=3):
+        """
+        Async version of update_petroleum_stocks for improved performance.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format  
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results for each stock type
+        """
+        import asyncio
+        
+        req_helper = self.clients['PET']
+        
+        # Execute all requests concurrently using async methods
+        try:
+            # Use asyncio.gather to run all async tasks concurrently
+            refinery_df, refined_df, tank_farm_df = await asyncio.gather(
+                req_helper.get_refinery_crude_stocks_async(start, end, max_concurrent),
+                req_helper.get_product_stocks_async(start, end, max_concurrent),
+                req_helper.get_tank_farm_stocks_async(start, end, max_concurrent),
+                return_exceptions=True
+            )
+            
+            results = {}
+            
+            # Save refinery crude stocks
+            if not isinstance(refinery_df, Exception):
+                refinery_df.to_hdf(self.table_db, "PET/refineries/crude_stocks")
+                results['refinery_crude'] = {
+                    'success': True, 
+                    'records': len(refinery_df),
+                    'key': 'PET/refineries/crude_stocks'
+                }
+                print(f"Saved refinery crude stocks: {len(refinery_df)} records")
+            else:
+                results['refinery_crude'] = {
+                    'success': False, 
+                    'error': str(refinery_df)
+                }
+                print(f"Failed to update refinery crude stocks: {refinery_df}")
+            
+            # Save refined product stocks  
+            if not isinstance(refined_df, Exception):
+                refined_df.to_hdf(self.table_db, "PET/supply/refined_stocks")
+                results['refined_products'] = {
+                    'success': True,
+                    'records': len(refined_df),
+                    'key': 'PET/supply/product_stocks'
+                }
+                print(f"Saved refined product stocks: {len(refined_df)} records")
+            else:
+                results['refined_products'] = {
+                    'success': False,
+                    'error': str(refined_df)
+                }
+                print(f"Failed to update refined product stocks: {refined_df}")
+            
+            # Save tank farm stocks
+            if not isinstance(tank_farm_df, Exception):
+                tank_farm_df.to_hdf(self.table_db, "PET/supply/tank_crude_stocks")
+                results['tank_farm'] = {
+                    'success': True,
+                    'records': len(tank_farm_df), 
+                    'key': 'PET/supply/tank_crude_stocks'
+                }
+                print(f"Saved tank farm stocks: {len(tank_farm_df)} records")
+            else:
+                results['tank_farm'] = {
+                    'success': False,
+                    'error': str(tank_farm_df)
+                }
+                print(f"Failed to update tank farm stocks: {tank_farm_df}")
+            
+            return results
+            
+        except Exception as e:
+            print(f"Async petroleum stocks update failed: {e}")
+            return {
+                'refinery_crude': {'success': False, 'error': str(e)},
+                'refined_products': {'success': False, 'error': str(e)},
+                'tank_farm': {'success': False, 'error': str(e)}
+            }
+
+    def update_petroleum_production(self, start=None, end=None):
+        req_helper = self.clients['PET']
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+
+        update_crude = req_helper.get_production_by_area(start, end)
+        update_refined = req_helper.get_refined_products_production(start, end)
+
+        update_data = {'PET/production/refined_products': {'df': update_refined, 'func':req_helper.get_refined_products_production},
+         'PET/production/crude_oil': {'df': update_crude, 'func': req_helper.get_production_by_area}}
+
+        self.update_from_dict(start, end, update_data)
+
+        return
+
+    def update_petroleum_consumption(self, start=None, end=None):
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        helper = self.clients['PET']
+        update_consumption =  {'/PET/consumption/by_product': {'df':helper.us_weekly_consumption_breakdown(start, end), 'func': helper.get_refined_product_supplied}}
+
+        self.update_from_dict(start, end, update_consumption)
+
+        return
+
+    def update_petroleum_movements(self, start=None, end=None):
+        """
+        Updating intra-district movements.
+        movements/ is net, movements/producers is flow between refining/ producing / importing / exporting states
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        helper = self.clients['PET']
+
+        net_receipts_df = helper.get_product_movements(start, end)
+        crude_movements_df = helper.get_crude_movements(start, end)
+        update_dict = {'/PET/movements/net':{'df':net_receipts_df, 'func':helper.get_product_movements},
+                      '/PET/movements/crude_movements':{'df':crude_movements_df, 'func':helper.get_crude_movements}}
+
+        self.update_from_dict(start, end, update_dict)
+
+        return
+
+    async def update_petroleum_movements_async(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """
+        Async version of update_petroleum_movements for improved performance with concurrent requests.
+        
+        Args:
+            start: Start date in format "YYYY-MM" (default: "2001-01")
+            end: End date in format "YYYY-MM" (default: "2025-08")
+            max_concurrent: Maximum concurrent requests (default: 3)
+            progress_callback: Optional callback function for progress updates
+            
+        Returns:
+            dict: Results with successful/failed updates and timing info
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+            
+        helper = self.clients['PET']
+        
+        try:
+            print(f"Starting async petroleum movements update for period {start} to {end}")
+            start_time = pd.Timestamp.now()
+            
+            results = {
+                'successful_data': {},
+                'failed_data': {},
+                'stored_keys': [],
+                'errors': {}
+            }
+            
+            # Get net movements using existing sync method (if no async version exists)
+            try:
+                net_receipts_df = helper.get_product_movements(start, end)
+                if not net_receipts_df.empty:
+                    results['successful_data']['net_movements'] = net_receipts_df
+                    net_receipts_df.to_hdf(self.table_db, '/PET/movements/net')
+                    results['stored_keys'].append('/PET/movements/net')
+                    print(f"✓ Stored {len(net_receipts_df)} rows to PET/movements/net")
+                else:
+                    results['failed_data']['net_movements'] = "No data returned"
+                    
+            except Exception as e:
+                error_msg = f"Failed to get net movements data: {str(e)}"
+                results['failed_data']['net_movements'] = error_msg
+                results['errors']['net_movements'] = error_msg
+                print(f"✗ {error_msg}")
+            
+            # Get crude movements using async method
+            try:
+                crude_movements_df = await helper.get_crude_movements_async(
+                    start=start,
+                    end=end,
+                    max_concurrent=max_concurrent,
+                    progress_callback=progress_callback
+                )
+                
+                if not crude_movements_df.empty:
+                    results['successful_data']['crude_movements'] = crude_movements_df
+                    # Store to HDF5 with MultiIndex columns preserved
+                    crude_movements_df.to_hdf(self.table_db, '/PET/movements/crude_movements')
+                    results['stored_keys'].append('/PET/movements/crude_movements')
+                    print(f"✓ Stored {len(crude_movements_df)} rows to PET/movements/crude_movements")
+                else:
+                    results['failed_data']['crude_movements'] = "No data returned"
+                    
+            except Exception as e:
+                error_msg = f"Failed to get crude movements data: {str(e)}"
+                results['failed_data']['crude_movements'] = error_msg
+                results['errors']['crude_movements'] = error_msg
+                print(f"✗ {error_msg}")
+            
+            end_time = pd.Timestamp.now()
+            duration = (end_time - start_time).total_seconds()
+            
+            # Update results with timing info
+            results['duration_seconds'] = duration
+            results['start_time'] = start_time
+            results['end_time'] = end_time
+            
+            print(f"Async petroleum movements update completed in {duration:.2f} seconds")
+            print(f"Successfully stored {len(results['stored_keys'])} datasets: {results['stored_keys']}")
+            
+            if results.get('failed_data'):
+                print(f"Failed to retrieve: {list(results['failed_data'].keys())}")
+                
+            return results
+            
+        except Exception as e:
+            error_msg = f"Critical error in async petroleum movements update: {str(e)}"
+            print(f"💥 {error_msg}")
+            return {
+                'error': error_msg,
+                'successful_data': {},
+                'failed_data': {'critical': error_msg},
+                'stored_keys': [],
+                'duration_seconds': 0
+            }
+
+    def update_petroleum_movements_async_sync(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """
+        Synchronous wrapper for the async petroleum movements update method.
+        
+        Args:
+            start: Start date in format "YYYY-MM" (default: "2001-01")
+            end: End date in format "YYYY-MM" (default: "2025-08")
+            max_concurrent: Maximum concurrent requests (default: 3)
+            progress_callback: Optional callback function for progress updates
+            
+        Returns:
+            dict: Results from async operation
+        """
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context, need to create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.update_petroleum_movements_async(start, end, max_concurrent, progress_callback)
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.update_petroleum_movements_async(start, end, max_concurrent, progress_callback)
+            )
+
+    def update_weekly_trade(self, start=None, end=None):
+        """ Function to update import/export tables """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+
+        helper = self.clients['PET']
+
+        update_dict = {
+                        'PET/movements/imports':
+                           {
+                            'df':helper.get_imports(start=start, end=end),
+                            'func': helper.get_imports
+                           },
+                        'PET/movements/exports':
+                           {
+                               'df': helper.get_exports_total(start=start, end=end),
+                               'func': helper.get_exports_total}
+                        }
+
+    def update_monthly_trade(self, start=None, end=None):
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+
+        update_func = lambda x, y: helper.get_padd_imports_from_top_src(padd_codes=["R10", 'R20', 'R30', "R40", "R50"], start=x, end=y)
+
+        helper = self.clients['PET']
+        update_dict = {
+        'PET/movements/exports/by_district':
+            {
+            'df': helper.get_exports_by_district(start, end),
+            'func': helper.get_exports_by_district
+            },
+        'PET/movements/imports/by_district':
+            {
+            'df': helper.get_padd_imports_from_top_src(start=start, end=end),
+            'func': update_func
+            }
+        }
+
+
+        self.update_from_dict(start, end, update_dict)
+
+
+        return
+
+    async def update_monthly_trade_async(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """
+        Async version of update_monthly_trade using async EIA client for improved performance.
+        
+        Args:
+            start: Start date in format "YYYY-MM" (default: "2001-01")
+            end: End date in format "YYYY-MM" (default: "2025-08") 
+            max_concurrent: Maximum concurrent requests (default: 3)
+            progress_callback: Optional callback function for progress updates
+            
+        Returns:
+            dict: Results with successful/failed updates and timing info
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+
+        helper = self.clients['PET']
+        
+        try:
+            print(f"Starting async monthly trade update for period {start} to {end}")
+            start_time = pd.Timestamp.now()
+            
+            # Use async methods from PetroleumHelper
+            results = {
+                'successful_data': {},
+                'failed_data': {},
+                'stored_keys': [],
+                'errors': {}
+            }
+            
+            # Get imports using async method
+            try:
+                padd_codes = ["R10", "R20", "R30", "R40", "R50"]
+                imports_data = await helper.get_multiple_padd_imports_async(
+                    padd_codes=padd_codes,
+                    start=start,
+                    end=end,
+                    max_concurrent=max_concurrent,
+                    progress_callback=progress_callback)
+
+                
+                if not imports_data.empty:
+                    results['successful_data']['imports_by_district'] = imports_data
+                    
+                    # Ensure columns are flattened for HDF5 compatibility
+                    if isinstance(imports_data.columns, pd.MultiIndex):
+                        # Flatten MultiIndex columns 
+                        imports_data.columns = ['_'.join(str(level) for level in col if level != '').strip('_') 
+                                              for col in imports_data.columns]
+                    
+                    # Store to HDF5
+                    imports_data.to_hdf(self.table_db, 'PET/movements/imports/by_district')
+                    results['stored_keys'].append('PET/movements/imports/by_district')
+                    print(f"✓ Stored {len(imports_data)} rows to PET/movements/imports/by_district")
+                else:
+                    results['failed_data']['imports_by_district'] = "No data returned"
+                    
+            except Exception as e:
+                error_msg = f"Failed to get imports data: {str(e)}"
+                results['failed_data']['imports_by_district'] = error_msg
+                results['errors']['imports'] = error_msg
+                print(f"✗ {error_msg}")
+            
+            # Get exports using async method
+            try:
+                exports_data = await helper.get_exports_async(
+                    start=start,
+                    end=end,
+                    max_concurrent=max_concurrent
+                )
+                
+                if not exports_data.empty:
+                    results['successful_data']['exports_by_district'] = exports_data
+                    # Store to HDF5 with MultiIndex columns preserved
+                    exports_data.to_hdf(self.table_db, 'PET/movements/exports/by_district')
+                    results['stored_keys'].append('PET/movements/exports/by_district')
+                    print(f"✓ Stored {len(exports_data)} rows to PET/movements/exports/by_district")
+                else:
+                    results['failed_data']['exports_by_district'] = "No data returned"
+                    
+            except Exception as e:
+                error_msg = f"Failed to get exports data: {str(e)}"
+                results['failed_data']['exports_by_district'] = error_msg
+                results['errors']['exports'] = error_msg
+                print(f"✗ {error_msg}")
+            
+            end_time = pd.Timestamp.now()
+            duration = (end_time - start_time).total_seconds()
+            
+            # Update results with timing info
+            results['duration_seconds'] = duration
+            results['start_time'] = start_time
+            results['end_time'] = end_time
+            
+            print(f"Async monthly trade update completed in {duration:.2f} seconds")
+            print(f"Successfully stored {len(results['stored_keys'])} datasets: {results['stored_keys']}")
+            
+            if results.get('failed_data'):
+                print(f"Failed to retrieve: {list(results['failed_data'].keys())}")
+                
+            return results
+            
+        except Exception as e:
+            error_msg = f"Critical error in async monthly trade update: {str(e)}"
+            print(f"💥 {error_msg}")
+            return {
+                'error': error_msg,
+                'successful_data': {},
+                'failed_data': {'critical': error_msg},
+                'stored_keys': [],
+                'duration_seconds': 0
+            }
+
+    def update_monthly_trade_async_sync(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """
+        Synchronous wrapper for the async monthly trade update method.
+        
+        Args:
+            start: Start date in format "YYYY-MM" (default: "2001-01")
+            end: End date in format "YYYY-MM" (default: "2025-08")
+            max_concurrent: Maximum concurrent requests (default: 3)
+            progress_callback: Optional callback function for progress updates
+            
+        Returns:
+            dict: Results from async operation
+        """
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context, need to create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.update_monthly_trade_async(start, end, max_concurrent, progress_callback)
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.update_monthly_trade_async(start, end, max_concurrent, progress_callback)
+            )
+
+    def update_from_dict(self,  start:str,end:str, update_dict:dict):
+
+        """ Formula used to update hdf without empty keys and to retry failed connections
+            Args:
+                end (str): "YYYY-MM" formatted string
+                start (str): "YYYY-MM" formatted string
+                update_dict (dict) : Dict of dicts structured {hdf_key:{'df':update_dataframe (pd.DataFrame), 'func':retrieval_function (func) }
+        """
+
+
+        failed_keys = []
+        # Retry once if failed
+        for key, val_dict in update_dict.items():
+            df = val_dict['df']
+            retrieval_func = val_dict['func']
+
+            # Only updates if df is not empty
+            if df.empty:
+                try:
+                    # noinspection PyArgumentList
+                    update_df = retrieval_func(start=start, end=end)
+                except EIAAPIError as e:
+                    print(f"Failed to retrieve client data {e}")
+                    failed_keys.append(key)
+                else:
+                    if not update_df.empty:
+                        update_df.to_hdf(self.table_db, key)
+                    else:
+                        print(f"DataFrame retrieved was empty failure to update key : {key}")
+            else:
+                df.to_hdf(self.table_db, key)
+
+        if failed_keys:
+             print(f'Failed to update keys : {failed_keys}')
+
+        return
+
+    def update_refinery_data(self, start=None, end=None):
+        if not start:
+            start = "2001-01-01"
+        if not end:
+            end = "2025-08-15"
+
+        req_helper = self.clients['PET']
+
+        try:
+            refinery_utilization = req_helper.get_refinery_utilization(start, end)
+            refinery_crude_stocks = req_helper.get_refinery_crude_stocks(start, end)
+            refinery_crude_consumption = req_helper.get_refinery_consumption(start, end)
+            refinery_output = req_helper.get_refined_products_production(start, end)
+        except EIAAPIError as e:
+            print('Failed to retrieve data from server\n')
+            print(f'Error generated: {e}')
+            return
+        else:
+            pass
+
+        refinery_utilization.to_hdf(self.table_db, 'PET/refineries/utilization')
+        refinery_crude_stocks.to_hdf(self.table_db, 'PET/refineries/crude_stocks')
+        refinery_crude_consumption.to_hdf(self.table_db, 'PET/refineries/crude_consumption')
+        refinery_output.to_hdf(self.table_db, "PET/production/refined_products")
+
+        print("Successfully updated all refinery data")
+        return True
+
 
 
 #############################################################################################################################################
+##
+##
 ## Agricultural tables
 ############################################################################################################################################
 # Initialize QuickStats client
@@ -1000,13 +1452,13 @@ class NASSTable(TableClient):
 
                 # If all date calculations failed, create a simple index
                 if not date_calculation_success:
-                    print(f'Warning: No date column created for {short_desc} - using row index')
-                    # Don't create a date column, but still allow data storage
+                    print(f'Warning: No date columns_col created for {short_desc} - using row index')
+                    # Don't create a date columns_col, but still allow data storage
                     if key is None:
                         key = f'{short_desc.lower()}'
 
             else:
-                # Handle case where there's no freq_desc column
+                # Handle case where there's no freq_desc columns_col
                 try:
                     if 'year' in df.columns and 'end_code' in df.columns:
                         # Filter and create dates
@@ -1062,7 +1514,7 @@ class NASSTable(TableClient):
                         if 'location_desc' in df.columns:
                             storage_columns.append("location_desc")
 
-                    storage_columns.append(key_to_name(key))  # This is the processed value column
+                    storage_columns.append(key_to_name(key))  # This is the processed value columns_col
 
                     if 'year' in df.columns:
                         storage_columns.append('year')
@@ -1266,7 +1718,7 @@ class NASSTable(TableClient):
                                 for fq in freqs:
                                     fq_len = len(df.loc[df['freq_desc'] == fq])
                                     biggest_len, largest_fq = (fq_len, fq) if fq_len > biggest_len else (
-                                    biggest_len, largest_fq)
+                                        biggest_len, largest_fq)
                                 df = df.loc[df['freq_desc'] == largest_fq]
 
                     # Date processing (simplified)
@@ -1799,7 +2251,7 @@ class ESRTableClient(FASTable):
         for year in years:
             year_data = self.get_esr_data(commodity, year, country)
             if not year_data.empty:
-                # Standardize column names - some years have different column structures
+                # Standardize columns_col names - some years have different columns_col structures
                 year_data = self._standardize_esr_columns(year_data, year)
                 year_data['marketing_year'] = year
                 all_data.append(year_data)
@@ -1817,9 +2269,9 @@ class ESRTableClient(FASTable):
 
     def _standardize_esr_columns(self, data: pd.DataFrame, year: int) -> pd.DataFrame:
         """
-        Standardize ESR column names and fix unit scaling issues across different years.
+        Standardize ESR columns_col names and fix unit scaling issues across different years.
         
-        Some years may have different column naming conventions (e.g., '2025_exports' 
+        Some years may have different columns_col naming conventions (e.g., '2025_exports'
         instead of 'weekEndingDate') and different unit scaling (grains may have 1000x scaling differences).
         
         Args:
@@ -1827,16 +2279,16 @@ class ESRTableClient(FASTable):
             year: Year of the data for context
             
         Returns:
-            DataFrame with standardized column names and units
+            DataFrame with standardized columns_col names and units
         """
         data = data.copy()
 
         # Check for year-specific date columns (like '2025_exports', '2024_exports')
         year_column = f"{year}_exports"
         if year_column in data.columns and 'weekEndingDate' not in data.columns:
-            # Rename the year column to weekEndingDate
+            # Rename the year columns_col to weekEndingDate
             data = data.rename(columns={year_column: 'weekEndingDate'})
-            print(f"Standardized column '{year_column}' to 'weekEndingDate' for {year} data")
+            print(f"Standardized columns_col '{year_column}' to 'weekEndingDate' for {year} data")
 
         # Ensure weekEndingDate is properly formatted as datetime
         if 'weekEndingDate' in data.columns:
@@ -1872,9 +2324,9 @@ class ESRTableClient(FASTable):
         date_like_columns = [col for col in data.columns if 'exports' in col and col != 'weekEndingDate']
         for col in date_like_columns:
             if col in data.columns and 'weekEndingDate' in data.columns:
-                # If we already have weekEndingDate, drop the redundant column
+                # If we already have weekEndingDate, drop the redundant columns_col
                 data = data.drop(columns=[col])
-                print(f"Removed redundant date column '{col}' from {year} data")
+                print(f"Removed redundant date columns_col '{col}' from {year} data")
 
         return data
 
@@ -1960,7 +2412,7 @@ class ESRTableClient(FASTable):
             Dict with analysis results including 'data' key with processed DataFrame
         """
         try:
-            from models.commodity_analytics import ESRAnalyzer
+            from models.agricultural.agricultural_analytics import ESRAnalyzer
 
             # Get multi-year data
             data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
@@ -2012,7 +2464,7 @@ class ESRTableClient(FASTable):
             Dict with seasonal analysis results including processed data
         """
         try:
-            from models.commodity_analytics import ESRAnalyzer
+            from models.agricultural.agricultural_analytics import ESRAnalyzer
 
             # Get multi-year data
             data = self.get_multi_year_esr_data(commodity, start_year=start_year, end_year=end_year)
@@ -2069,7 +2521,7 @@ class ESRTableClient(FASTable):
         # Ensure weekEndingDate is datetime
         data['weekEndingDate'] = pd.to_datetime(data['weekEndingDate'])
 
-        # Create time grouping column
+        # Create time grouping columns_col
         if time_period == 'monthly':
             data['time_group'] = data['weekEndingDate'].dt.to_period('M')
         elif time_period == 'quarterly':
@@ -2594,3 +3046,566 @@ class ESRTableClient(FASTable):
 
         # Generate merged data
         return self.merge_export_years(commodity, save_merged=True)
+
+
+# =============================================================================
+# COMMODITY-SPECIFIC EIA SUBCLASSES  
+# =============================================================================
+
+class PETable(EIATable):
+    """
+    Petroleum Liquids specific EIA table client.
+    Handles petroleum stocks, production, consumption, and movements.
+    """
+    
+    def __init__(self, rename_key_cols=True):
+        super().__init__("PET", rename_key_cols)
+    
+    # Copy petroleum-specific methods from EIATable
+    def update_petroleum_stocks(self, start="2001-01", end="2025-08", max_concurrent=3):
+        """Update petroleum stocks using async methods for improved performance."""
+        return super().update_petroleum_stocks(start, end, max_concurrent)
+    
+    async def update_petroleum_stocks_async(self, start="2001-01", end="2025-08", max_concurrent=3):
+        """Async version of update_petroleum_stocks for improved performance."""
+        return await super().update_petroleum_stocks_async(start, end, max_concurrent)
+    
+    def update_petroleum_production(self, start=None, end=None):
+        """Update petroleum production data."""
+        return super().update_petroleum_production(start, end)
+    
+    def update_petroleum_consumption(self, start=None, end=None):
+        """Update petroleum consumption data."""
+        return super().update_petroleum_consumption(start, end)
+    
+    def update_petroleum_movements(self, start=None, end=None):
+        """Update petroleum movements data."""
+        return super().update_petroleum_movements(start, end)
+    
+    async def update_petroleum_movements_async(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """Async version of update_petroleum_movements."""
+        return await super().update_petroleum_movements_async(start, end, max_concurrent, progress_callback)
+    
+    def update_petroleum_movements_async_sync(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """Synchronous wrapper for async petroleum movements update."""
+        return super().update_petroleum_movements_async_sync(start, end, max_concurrent, progress_callback)
+    
+    def update_weekly_trade(self, start=None, end=None):
+        """Function to update import/export tables"""
+        return super().update_weekly_trade(start, end)
+    
+    def update_monthly_trade(self, start=None, end=None):
+        """Function to update import/export tables for district data"""
+        return super().update_monthly_trade(start, end)
+    
+    async def update_monthly_trade_async(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """Async version of update_monthly_trade."""
+        return await super().update_monthly_trade_async(start, end, max_concurrent, progress_callback)
+    
+    def update_monthly_trade_async_sync(self, start=None, end=None, max_concurrent=3, progress_callback=None):
+        """Synchronous wrapper for async monthly trade update."""
+        return super().update_monthly_trade_async_sync(start, end, max_concurrent, progress_callback)
+    
+    def update_refinery_data(self, start=None, end=None):
+        """Update refinery data."""
+        return super().update_refinery_data(start, end)
+
+
+class NGTable(EIATable):
+    """
+    Natural Gas specific EIA table client.
+    Handles natural gas storage, consumption, production, and trade.
+    """
+    
+    def __init__(self, rename_key_cols=True):
+        super().__init__("NG", rename_key_cols)
+    
+    # Copy natural gas-specific methods from EIATable
+    def update_consumption_by_state(self, save=True, key="consumption/by_state", prefix=True, table=None):
+        """Update natural gas consumption by state."""
+        return super().update_consumption_by_state(save, key, prefix, table)
+    
+    def get_consumption_by_region(self, start="2001-01-31", end="2025-05-31", end_use=None, update_table=False):
+        """Get natural gas consumption data by region and end use."""
+        return super().get_consumption_by_region(start, end, end_use, update_table)
+    
+    def update_natural_gas_storage(self, start=None, end=None):
+        """
+        Update natural gas storage data.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        
+        helper = self.clients["NG"]
+        
+        # Get storage data
+        try:
+            storage_data = helper.get_storage_data(start, end)
+            storage_data.to_hdf(self.table_db, "NG/storage/underground")
+            print(f"Updated NG storage data: {len(storage_data)} records")
+        except Exception as e:
+            print(f"Failed to update NG storage data: {e}")
+        
+        return
+    
+    def update_natural_gas_production(self, start=None, end=None):
+        """
+        Update natural gas production data.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        
+        helper = self.clients["NG"]
+        
+        # Get production data
+        try:
+            production_data = helper.get_production_data(start, end)
+            production_data.to_hdf(self.table_db, "NG/production/dry_gas")
+            print(f"Updated NG production data: {len(production_data)} records")
+        except Exception as e:
+            print(f"Failed to update NG production data: {e}")
+        
+        return
+    
+    def update_natural_gas_trade(self, start=None, end=None):
+        """
+        Update natural gas import/export trade data.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        
+        helper = self.clients["NG"]
+        
+        # Get trade data
+        try:
+            imports_data = helper.get_imports_data(start, end)
+            exports_data = helper.get_exports_data(start, end)
+            
+            imports_data.to_hdf(self.table_db, "NG/trade/imports")
+            exports_data.to_hdf(self.table_db, "NG/trade/exports")
+            
+            print(f"Updated NG imports data: {len(imports_data)} records")
+            print(f"Updated NG exports data: {len(exports_data)} records")
+        except Exception as e:
+            print(f"Failed to update NG trade data: {e}")
+        
+        return
+    
+    # Async update methods using NatGasHelper
+    async def update_underground_storage_async(self, start=None, end=None, max_concurrent=3):
+        """
+        Update underground natural gas storage data asynchronously.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        
+        helper = self.clients["NG"]
+        
+        try:
+            storage_data = await helper.get_underground_storage_async(start, end, max_concurrent)
+            storage_data.to_hdf(self.table_db, "NG/storage/underground")
+            
+            result = {
+                'success': True,
+                'records': len(storage_data),
+                'key': 'NG/storage/underground'
+            }
+            print(f"✓ Updated NG underground storage: {len(storage_data)} records")
+            return result
+            
+        except Exception as e:
+            result = {'success': False, 'error': str(e)}
+            print(f"✗ Failed to update NG underground storage: {e}")
+            return result
+
+    async def update_consumption_percentages_async(self, start=None, end=None, max_concurrent=3):
+        """
+        Update natural gas consumption percentage data asynchronously.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format  
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        
+        helper = self.clients["NG"]
+        
+        try:
+            # Update both residential and utility percentages concurrently
+            import asyncio
+            
+            residential_task = helper.get_pct_of_residential_async(start, end, max_concurrent)
+            utility_task = helper.get_pct_of_utility_async(start, end, max_concurrent)
+            
+            residential_data, utility_data = await asyncio.gather(
+                residential_task, utility_task, return_exceptions=True
+            )
+            
+            results = {}
+            
+            # Handle residential data
+            if not isinstance(residential_data, Exception):
+                residential_data.to_hdf(self.table_db, "NG/consumption/pct_residential")
+                results['residential'] = {
+                    'success': True,
+                    'records': len(residential_data),
+                    'key': 'NG/consumption/pct_residential'
+                }
+                print(f"✓ Updated NG residential percentage: {len(residential_data)} records")
+            else:
+                results['residential'] = {'success': False, 'error': str(residential_data)}
+                print(f"✗ Failed to update NG residential percentage: {residential_data}")
+            
+            # Handle utility data
+            if not isinstance(utility_data, Exception):
+                utility_data.to_hdf(self.table_db, "NG/consumption/pct_utility")
+                results['utility'] = {
+                    'success': True,
+                    'records': len(utility_data),
+                    'key': 'NG/consumption/pct_utility'
+                }
+                print(f"✓ Updated NG utility percentage: {len(utility_data)} records")
+            else:
+                results['utility'] = {'success': False, 'error': str(utility_data)}
+                print(f"✗ Failed to update NG utility percentage: {utility_data}")
+            
+            return results
+            
+        except Exception as e:
+            result = {'success': False, 'error': str(e)}
+            print(f"✗ Failed to update NG consumption percentages: {e}")
+            return result
+
+    async def bulk_update_natural_gas_async(self, start=None, end=None, max_concurrent=3):
+        """
+        Update all natural gas data types using NatGasHelper bulk operations.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results for all data types
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+        
+        helper = self.clients["NG"]
+        
+        try:
+            print(f"Starting bulk NG data update for period {start} to {end}")
+            start_time = pd.Timestamp.now()
+            
+            # Use the bulk update method from NatGasHelper
+            bulk_results = await helper.bulk_update_all_params_async(start, end, max_concurrent)
+            
+            # Save the data to HDF5 tables
+            stored_keys = []
+            failed_keys = []
+            
+            for param_key, result in bulk_results.items():
+                if result['success']:
+                    data = result['data']
+                    # Map parameter keys to table keys
+                    table_key_mapping = {
+                        'underground_storage': 'NG/storage/underground',
+                        'pct_of_residential': 'NG/consumption/pct_residential',
+                        'pct_of_utility': 'NG/consumption/pct_utility'
+                    }
+                    
+                    table_key = table_key_mapping.get(param_key, f"NG/{param_key}")
+                    
+                    try:
+                        data.to_hdf(self.table_db, table_key)
+                        stored_keys.append(table_key)
+                        print(f"✓ Stored {len(data)} rows to {table_key}")
+                    except Exception as save_error:
+                        failed_keys.append(param_key)
+                        print(f"✗ Failed to save {param_key}: {save_error}")
+                else:
+                    failed_keys.append(param_key)
+            
+            end_time = pd.Timestamp.now()
+            execution_time = str(end_time - start_time)
+            
+            final_results = {
+                'bulk_results': bulk_results,
+                'stored_keys': stored_keys,
+                'failed_keys': failed_keys,
+                'execution_time': execution_time,
+                'successful_updates': len(stored_keys),
+                'failed_updates': len(failed_keys)
+            }
+            
+            print(f"✓ Bulk NG update completed in {execution_time}")
+            print(f"✓ Successfully updated: {len(stored_keys)} datasets")
+            if failed_keys:
+                print(f"✗ Failed to update: {len(failed_keys)} datasets")
+            
+            return final_results
+            
+        except Exception as e:
+            print(f"Fatal error in bulk NG data update: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def bulk_update_natural_gas_sync(self, start=None, end=None, max_concurrent=3):
+        """
+        Synchronous wrapper for bulk_update_natural_gas_async.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results
+        """
+        import asyncio
+        
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context, need to create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.bulk_update_natural_gas_async(start, end, max_concurrent)
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.bulk_update_natural_gas_async(start, end, max_concurrent)
+            )
+
+    # Sync wrapper methods
+    def update_underground_storage_sync(self, start=None, end=None, max_concurrent=3):
+        """Synchronous wrapper for update_underground_storage_async."""
+        import asyncio
+        
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.update_underground_storage_async(start, end, max_concurrent)
+                )
+                return future.result()
+        except RuntimeError:
+            return asyncio.run(
+                self.update_underground_storage_async(start, end, max_concurrent)
+            )
+
+    def update_consumption_percentages_sync(self, start=None, end=None, max_concurrent=3):
+        """Synchronous wrapper for update_consumption_percentages_async."""
+        import asyncio
+        
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.update_consumption_percentages_async(start, end, max_concurrent)
+                )
+                return future.result()
+        except RuntimeError:
+            return asyncio.run(
+                self.update_consumption_percentages_async(start, end, max_concurrent)
+            )
+
+    # User requested methods for specific keys
+    def update_regional_consumption(self, start=None, end=None, use_async=True):
+        """
+        Update 'NG/demand/consumption' using NatGasHelper regional_consumption methods.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            use_async: Whether to use async version (default: True)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        helper = self.clients["NG"]
+        
+        try:
+            if use_async:
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            asyncio.run,
+                            helper.get_regional_data_async('consolidated_consumption')
+                        )
+                        regional_data = future.result()
+                except RuntimeError:
+                    regional_data = asyncio.run(helper.get_regional_consumption())
+            else:
+                regional_data = helper.regional_consumption_breakdown_sync()
+            
+            # Store the data with 2-level MultiIndex
+            table_key = "NG/demand/consumption"
+            regional_data.to_hdf(self.table_db, table_key)
+            
+            print(f"✓ Updated {table_key}: {len(regional_data)} rows with {len(regional_data.columns)} columns")
+            print(f"  Regional structure: {list(regional_data.columns.get_level_values(0).unique())}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"✗ Failed to update regional consumption: {e}")
+            return False
+
+    async def update_consumption_percentages_by_district_async(self, start=None, end=None, max_concurrent=3):
+        """
+        Update pct_of_residential and pct_of_utility data to demand/residential/by_district 
+        and demand/utility/by_district using async functions.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results
+        """
+        if not start:
+            start = "2001-01"
+        if not end:
+            end = "2025-08"
+            
+        helper = self.clients["NG"]
+        results = {}
+        
+        try:
+            print(f"Updating natural gas consumption percentages by district for {start} to {end}")
+            
+            # Update residential consumption percentages
+            try:
+                residential_data = await helper.get_pct_of_residential_async(start, end, max_concurrent)
+                
+                table_key = "NG/demand/residential/by_district"
+                residential_data.to_hdf(self.table_db, table_key)
+                
+                results['residential'] = {
+                    'success': True,
+                    'key': table_key,
+                    'records': len(residential_data),
+                    'data': residential_data
+                }
+                print(f"✓ Updated {table_key}: {len(residential_data)} records")
+                
+            except Exception as e:
+                results['residential'] = {
+                    'success': False,
+                    'error': str(e)
+                }
+                print(f"✗ Failed to update residential percentages: {e}")
+            
+            # Update utility consumption percentages  
+            try:
+                utility_data = await helper.get_pct_of_utility_async(start, end, max_concurrent)
+                
+                table_key = "NG/demand/utility/by_district"
+                utility_data.to_hdf(self.table_db, table_key)
+                
+                results['utility'] = {
+                    'success': True,
+                    'key': table_key, 
+                    'records': len(utility_data),
+                    'data': utility_data
+                }
+                print(f"✓ Updated {table_key}: {len(utility_data)} records")
+                
+            except Exception as e:
+                results['utility'] = {
+                    'success': False,
+                    'error': str(e)
+                }
+                print(f"✗ Failed to update utility percentages: {e}")
+            
+            # Summary
+            successful = sum(1 for r in results.values() if r.get('success', False))
+            total = len(results)
+            print(f"\nCompleted consumption percentages update: {successful}/{total} successful")
+            
+            return results
+            
+        except Exception as e:
+            error_msg = f"Critical error in consumption percentages update: {str(e)}"
+            print(f"💥 {error_msg}")
+            return {
+                'residential': {'success': False, 'error': error_msg},
+                'utility': {'success': False, 'error': error_msg}
+            }
+
+    def update_consumption_percentages_by_district_sync(self, start=None, end=None, max_concurrent=3):
+        """
+        Synchronous wrapper for update_consumption_percentages_by_district_async.
+        
+        Args:
+            start: Start date in YYYY-MM format
+            end: End date in YYYY-MM format
+            max_concurrent: Maximum concurrent requests
+            
+        Returns:
+            Dictionary with update results
+        """
+        import asyncio
+        
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.update_consumption_percentages_by_district_async(start, end, max_concurrent)
+                )
+                return future.result()
+        except RuntimeError:
+            return asyncio.run(
+                self.update_consumption_percentages_by_district_async(start, end, max_concurrent)
+            )
